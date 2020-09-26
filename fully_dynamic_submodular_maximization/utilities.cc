@@ -47,7 +47,6 @@ vector<double> LogSpace(double small, double large, double base) {
     reverse(log_space.begin(), log_space.end());
     return log_space;
   }
-  assert(base > 1);
   int steps =
       static_cast<int>(ceil((log(large) - log(small)) / log(base) - 1e-6));
   double step = pow(large / small, 1.0 / steps);
