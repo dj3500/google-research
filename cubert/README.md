@@ -1,9 +1,170 @@
 # CuBERT
 
+
+## Update 2021/9/22: Evaluating and Training the Models
+
+A `run_classifier.py` script (forked from the original BERT version) is provided
+to use the finetuned models for the classification tasks above.
+
+To use it, you first need to download the relevant files above (i.e., the
+corresponding vocabulary, dataset, and model checkpoint) and then need to create
+a BERT configuration file matching the chosen model.
+
+Assuming the downloaded data are stored in `$DATA_DIR`, you can then use the
+following command line to evaluate a model (note that it requires access to the
+`bert` module in your python library path):
+
+```
+python cubert/run_classifier.py
+  --do_train=False
+  --bert_config_file=$DATA_DIR/bert_large_config.json
+  --vocab_file=$DATA_DIR/github_python_minus_ethpy150open_deduplicated_vocabulary.txt
+  --task_name=exception
+  --init_checkpoint=$DATA_DIR/exception__epochs_20__pre_trained_epochs_1/model.ckpt-378
+  --data_dir=$DATA_DIR/exception_datasets
+  --output_dir=exception_results
+  --do_eval=True
+```
+
+This example file was contributed by Marc Brockschmidt <marc+github@marcbrockschmidt.de>. We are grateful for his help!
+
+
+## Update 2021/7/11: Fresh Pre-trained Python and Java Models
+
+We are releasing a fresh set of Python and Java pre-training corpus and models, drawn from the BigQuery version of GitHub as of July 11, 2021. These pre-training corpora were deduplicated with the updated process described in [Collection Query](https://github.com/google-research/google-research/tree/master/cubert#collection-query) below. Note that for the Python corpus, files similar to ETH Py150 Open are also extracted from pre-training. The Java corpus is just internally deduplicated.
+
+The pre-trained models were BERT Large, and trained for 2 epochs.
+
+* Python, deduplicated, BigQuery snapshot as of July 11, 2021.
+    * Manifest: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Python/github_python_minus_ethpy150open_deduplicated_manifest)
+        [`gs://cubert/20210711_Python/github_python_minus_ethpy150open_deduplicated_manifest`].
+    * Vocabulary: [[UI]](https://storage.cloud.google.com/cubert/20210711_Python/github_python_minus_ethpy150open_deduplicated_vocabulary.txt)
+        [`gs://cubert/20210711_Python/github_python_minus_ethpy150open_deduplicated_vocabulary.txt`].
+    * Model checkpoint for length 512, 2 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Python/pre_trained_model_epochs_2__length_512)
+        [`gs://cubert/20210711_Python/pre_trained_model_epochs_2__length_512`].
+    * Model checkpoint for length 1024, 2 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Python/pre_trained_model_epochs_2__length_1024)
+        [`gs://cubert/20210711_Python/pre_trained_model_epochs_2__length_1024`].
+    * Model checkpoint for length 2048, 2 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Python/pre_trained_model_epochs_2__length_2048)
+        [`gs://cubert/20210711_Python/pre_trained_model_epochs_2__length_2048`].
+
+* Java, deduplicated, BigQuery snapshot as of July 11, 2021.
+    * Manifest: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Java/github_java_deduplicated_manifest)
+        [`gs://cubert/20210711_Java/github_java_deduplicated_manifest`].
+    * Vocabulary: [[UI]](https://storage.cloud.google.com/cubert/20210711_Java/github_java_deduplicated_vocabulary.txt)
+        [`gs://cubert/20210711_Java/github_java_deduplicated_vocabulary.txt`].
+    * Model checkpoint for length 512, 2 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Java/pre_trained_model_epochs_2__length_512)
+        [`gs://cubert/20210711_Java/pre_trained_model_epochs_2__length_512`].
+    * Model checkpoint for length 1024, 2 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Java/pre_trained_model_epochs_2__length_1024)
+        [`gs://cubert/20210711_Java/pre_trained_model_epochs_2__length_1024`].
+    * Model checkpoint for length 2048, 2 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20210711_Java/pre_trained_model_epochs_2__length_2048)
+        [`gs://cubert/20210711_Java/pre_trained_model_epochs_2__length_2048`].
+
+
+## Update 2021/03/04: Clarifications
+
+### Errata in Pre-training Corpus
+
+The paper described how we constructed the Python pre-training corpus in detail. We discovered a small deviation in the actual process we followed, which although harmless to the validity of the results, may cause confusion. We explain this deviation here.
+
+We collect our pre-training corpus as follows:
+
+1. Read from BigQuery's GitHub database all files ending in `.py` that are not symbolic links and appear in the `master/head` branch.
+2. Remove from the results of Step #1 those files that are similar (for some approximate similarity metric) to the files in the ETH Py150 Open corpus.
+3. Keep from the results of Step #2 one file per "similarity" cluster, i.e., groups of files that are similar to each other (according to the same approximate similarity metric used in Step #2).
+
+What happened in practice was the following:
+
+1. Step #1 brought in some duplicate files from GitHub, due to cloning (same content digest but different repository and path).
+2. Step #2 removed from the results of Step #1 all files similar to ETH Py150 Open, as intended. That included all clones of such files.
+3. Step #3 didn't remove all identical files from its input. The reason for this was that Step #3 is essentially an O(N^2) process, and N was roughly 14M. To speed the process up, we performed Step #3 in semi-independent batches. As a result, if a file had a clone in another batch, they might both be individually kept by their corresponding batches. That problem did not affect Step #2, because all GitHub files were compared to all ETH Py150 Open files. Therefore, Step #2 was not affected.
+
+Out of the ~7M files in our pre-training corpus, only ~4M files are indeed unique. Consequently, the manifest contains multiple entries for some GitHub SHA1 digests. In practice, this causes a small skew in our pre-training process. Note, however, that this does not affect the validity of using ETH Py150 Open as our fine-tuning corpus, or our results, because there is still no "information leak" between the pre-training and fine-tuning corpora.
+
+We are indebted to David Gros (@DNGros) for discovering this in our datasets, and bringing it to our attention.
+
+### Collection Query
+
+We have been asked about the query used to fetch the pre-training corpus from BigQuery's GitHub dataset. We provide it here:
+
+```
+with
+  allowed_repos as (
+    select repo_name, license from `bigquery-public-data.github_repos.licenses`
+    where license in unnest(
+      ["artistic-2.0", "isc", "mit", "cc0-1.0", "epl-1.0", "gpl-2.0",
+       "gpl-3.0", "mpl-2.0", "lgpl-2.1", "lgpl-3.0", "unlicense", "apache-2.0",
+       "bsd-2-clause"])),
+  github_files_at_head as (
+    select id, repo_name, path as filepath, symlink_target
+    from `bigquery-public-data.github_repos.files`
+    where ref = "refs/heads/master" and ends_with(path, ".py")
+    and symlink_target is null),
+  unique_full_path AS (
+    select id, max(concat(repo_name, ':', filepath)) AS full_path
+    from github_files_at_head
+    group by id),
+  unique_github_files_at_head AS (
+    select github_files_at_head.id, github_files_at_head.repo_name,
+      github_files_at_head.filepath
+    from github_files_at_head, unique_full_path
+    where concat(github_files_at_head.repo_name, ':',
+                 github_files_at_head.filepath) = unique_full_path.full_path),
+  github_provenances as (
+    select id, allowed_repos.repo_name as repo_name, license, filepath
+    from allowed_repos inner join unique_github_files_at_head
+    on allowed_repos.repo_name = unique_github_files_at_head.repo_name),
+  github_source_files as (
+    select id, content
+    from `bigquery-public-data.github_repos.contents`
+    where binary = false),
+  github_source_snapshot as (
+    select github_source_files.id as id, repo_name as repository, license,
+      filepath,content
+    from github_source_files inner join github_provenances
+    on github_source_files.id = github_provenances.id)
+select * from github_source_snapshot;
+```
+
+Note that this corrects for the error described in the previous subsection.
+
+The original query, used for the pre-training corpus in the paper, did not have
+the ID-based deduplication done by views `unique_full_path` and
+`unique_github_files_at_head`. Specifically, view `github_provenances` was
+reading from `github_files_at_head` in its `from` clause, rather than from
+`unique_github_files_at_head`.
+
+
+## Update 2020/11/16: Pre-trained Java Model with Code Comments
+
+We are releasing a Java pre-training corpus and pre-trained model. This model was pre-trained on all Java content, including comments.
+
+* Java, deduplicated, with code comments, BigQuery snapshot as of October 18, 13, 2020.
+    * Manifest: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20201018_Java_Deduplicated/github_java_manifest)
+        [`gs://cubert/20201018_Java_Deduplicated/github_java_manifest`].
+    * Vocabulary: [[UI]](https://console.cloud.google.com/storage/browser/_details/cubert/20201018_Java_Deduplicated/github_java_vocabulary.txt)
+        [`gs://cubert/20201018_Java_Deduplicated/github_java_vocabulary.txt`].
+    * Model checkpoint for length 1024, 1 epoch: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20201018_Java_Deduplicated/pre_trained_model_deduplicated__epochs_1__length_1024)
+        [`gs://cubert/20201018_Java_Deduplicated/pre_trained_model_deduplicated__epochs_1__length_1024`].
+
+
+## Update 2020/09/29: Pre-trained Java Model
+
+We are releasing a Java pre-training corpus and pre-trained model. This model was not pre-trained on comments, but an expanded model including Javadoc and regular comments is upcoming.
+
+* Java, deduplicated, no code comments, BigQuery snapshot as of September 13, 2020.
+    * Manifest: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20200913_Java_Deduplicated/github_java_manifest)
+        [`gs://cubert/20200913_Java_Deduplicated/github_java_manifest`].
+    * Vocabulary: [[UI]](https://console.cloud.google.com/storage/browser/_details/cubert/20200913_Java_Deduplicated/github_java_vocabulary.txt)
+        [`gs://cubert/20200913_Java_Deduplicated/github_java_vocabulary.txt`].
+    * Model checkpoint for length 1024, 1 epoch: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20200913_Java_Deduplicated/pre_trained_model_deduplicated__epochs_1__length_1024)
+        [`gs://cubert/20200913_Java_Deduplicated/pre_trained_model_deduplicated__epochs_1__length_1024`].
+
+
 ## Introduction
 
 This is a repository for code, models and data accompanying the ICML 2020 paper
-[Learning and Evaluating Contextual Embedding of Source Code](https://proceedings.icml.cc/static/paper_files/icml/2020/5401-Paper.pdf).
+[Learning and Evaluating Contextual Embedding of Source Code](http://proceedings.mlr.press/v119/kanade20a.html). In addition to the Python artifacts described in the paper, we are also
+releasing the pre-training corpus and CuBERT models for other languages.
 
 If you use the code, models or data released through this repository, please
 cite the following paper:
@@ -41,6 +202,21 @@ produce output similar to that illustrated in the
 with TensorFlow models, the `decode_list` logic from
 `code_to_subtokenized_sentences.py` can be skipped.
 
+It is possible to configure CuBERT tokenizers to skip emitting tokens of some
+kinds. For our fine-tuning tasks presented below, we skip comment and whitespace
+tokens. After initializing a tokenizer, this will configure it to skip
+those kinds of tokens:
+```
+from cubert import unified_tokenizer
+from cubert import python_tokenizer
+...
+tokenizer = python_tokenizer.PythonTokenizer()
+tokenizer.update_types_to_skip((
+      unified_tokenizer.TokenKind.COMMENT,
+      unified_tokenizer.TokenKind.WHITESPACE,
+  ))
+```
+
 ## The Multi-Headed Pointer Model
 
 The `finetune_varmisuse_pointer_lib.py` file provides an implementation of the
@@ -48,7 +224,7 @@ multi-headed pointer model described in [Neural Program Repair by Jointly Learni
 model. The `model_fn_builder` function should be integrated into an appropriate
 fine-tuning script along the lines of the [fine-tuning script of the BERT model](https://github.com/google-research/bert/blob/eedf5716ce1268e56f0a50264a88cafad334ac61/run_classifier.py#L847).
 
-## Pre-trained Datasets and Models
+## Pre-trained Models and Pre-training Corpora
 
 We provide the following files, all stored in Google Cloud Storage. We give
 links to each file or directory (via the Cloud Storage UI), as well as URIs for the
@@ -88,9 +264,9 @@ where contents.id = files.id and
       contents.id = <id>;
 ```
 
-At this time, we release the following pre-trained datasets and models:
+At this time, we release the following pre-trained model and pre-training corpus. Look in the updates, below, for other releases.
 
-1. Python, deduplicated after files similar to [ETH Py150 Open](https://github.com/google-research-datasets/eth_py150_open) were removed. BigQuery snapshot as of June 21 2020.
+* Python, deduplicated after files similar to [ETH Py150 Open](https://github.com/google-research-datasets/eth_py150_open) were removed. BigQuery snapshot as of June 21, 2020. These are the models and manifests involved in the published paper.
     * Manifest: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20200621_Python/github_python_minus_ethpy150open_deduplicated_manifest)
         [`gs://cubert/20200621_Python/github_python_minus_ethpy150open_deduplicated_manifest`].
     * Vocabulary: [[UI]](https://console.cloud.google.com/storage/browser/_details/cubert/20200621_Python/github_python_minus_ethpy150open_deduplicated_vocabulary.txt)
@@ -100,13 +276,6 @@ At this time, we release the following pre-trained datasets and models:
     * Model checkpoint for length 512, 2 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20200621_Python/pre_trained_model__epochs_2__length_512)
         [`gs://cubert/20200621_Python/pre_trained_model__epochs_2__length_512`].
 
-1. Java, **experimental, not deduplicated**, BigQuery snapshot as of September 13 2020.
-    * Manifest: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20200913_Java/github_java_manifest)
-        [`gs://cubert/20200913_Java/github_java_manifest`].
-    * Vocabulary: [[UI]](https://console.cloud.google.com/storage/browser/_details/cubert/20200913_Java/github_java_vocabulary.txt)
-        [`gs://cubert/20200913_Java/github_java_vocabulary.txt`].
-    * Model checkpoint for length 1024, 0.1 epochs: [[UI]](https://console.cloud.google.com/storage/browser/cubert/20200913_Java/pre_trained_model__epochs_0.1__length_1024)
-        [`gs://cubert/20200913_Java/pre_trained_model__epochs_0.1__length_1024`].
 
 ## Benchmarks and Fine-Tuned Models
 
@@ -114,12 +283,12 @@ Here we describe the 6 Python benchmarks we created. All 6 benchmarks were deriv
 
 1. **Function-docstring classification**. Combinations of functions with their correct or incorrect documentation string, used to train a classifier that can tell which pairs go together. The JSON fields are:
      * `function`: string, the source code of a function as text
-     * `docstring`: string, the documentation string for that function
+     * `docstring`: string, the documentation string for that function. Note that the string is unquoted. To be able to properly tokenize it with the CuBERT tokenizers, you have to wrap it in quotes first. For example, in Python, use `string_to_tokenize = f'"""{docstring}"""'`.
      * `label`: string, one of (“Incorrect”, “Correct”), the label of the example.
      * `info`: string, an unformatted description of how the example was constructed, including the source dataset (always “ETHPy150Open”), the repository and filepath, the function name and, for “Incorrect” examples, the function whose docstring was substituted.
 1. **Exception classification**. Combinations of functions where one exception type has been masked, along with a label indicating the masked exception type. The JSON fields are:
      * `function`: string, the source code of a function as text, in which one exception type has been replaced with the special token “__HOLE__”
-     * `label`: string, one of (`ValueError`, `AttributeError`, `TypeError`, `OSError`, `IOError`, `ImportError`, `IndexError`, `DoesNotExist`, `KeyboardInterrupt`, `StopIteration`, `AssertionError`, `SystemExit`, `RuntimeError`, `HTTPError`, `UnicodeDecodeError`, `NotImplementedError`, `ValidationError`, `ObjectDoesNotExist`, `NameError`), the masked exception type
+     * `label`: string, one of (`ValueError`, `KeyError`, `AttributeError`, `TypeError`, `OSError`, `IOError`, `ImportError`, `IndexError`, `DoesNotExist`, `KeyboardInterrupt`, `StopIteration`, `AssertionError`, `SystemExit`, `RuntimeError`, `HTTPError`, `UnicodeDecodeError`, `NotImplementedError`, `ValidationError`, `ObjectDoesNotExist`, `NameError`, `None`), the masked exception type. Note that `None` never occurs in the data and will be removed in a future release.
      * `info`: string, an unformatted description of how the example was constructed, including the source dataset (always “ETHPy150Open”), the repository and filepath, and the fully-qualified function name.
 1. **Variable-misuse classification**. Combinations of functions where one use of a variable may have been replaced with another variable defined in the same context, along with a label indicating if this bug-injection has occurred. The JSON fields are:
      * `function`: string, the source code of a function as text.

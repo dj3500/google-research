@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Helper classes for sample generation."""
 
 from __future__ import absolute_import
@@ -62,7 +61,6 @@ def normalize_probs(samples, smoothing=1e-8):
   return new_samples
 
 
-# pylint: disable=old-style-class
 @six.add_metaclass(abc.ABCMeta)
 class ReplayBuffer():
 
@@ -73,9 +71,6 @@ class ReplayBuffer():
   @abc.abstractmethod
   def replay(self, envs):
     raise NotImplementedError
-
-
-# pylint: enable=old-style-class
 
 
 class AllGoodReplayBuffer(ReplayBuffer):

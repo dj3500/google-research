@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,19 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Tests for kws_streaming.layers.conv1d_transpose."""
-import random as rn
+
 from absl.testing import parameterized
 import numpy as np
 from kws_streaming.layers import conv1d_transpose
+from kws_streaming.layers import modes
 from kws_streaming.layers import test_utils
 from kws_streaming.layers.compat import tf
 from kws_streaming.layers.compat import tf1
-from kws_streaming.layers.modes import Modes
 from kws_streaming.models import utils
-from kws_streaming.train import test
-tf1.disable_eager_execution()
+from kws_streaming.train import inference
 
 
 def conv1d_transpose_model(flags, filters, kernel_size, stride):
@@ -60,10 +58,7 @@ class Conv1DTransposeTest(tf.test.TestCase, parameterized.TestCase):
 
   def setUp(self):
     super(Conv1DTransposeTest, self).setUp()
-    seed = 123
-    np.random.seed(seed)
-    rn.seed(seed)
-    tf.random.set_seed(seed)
+    test_utils.set_seed(123)
 
   @parameterized.parameters(1, 2, 3, 4, 5, 6)
   def test_streaming_strides(self, stride):
@@ -97,12 +92,12 @@ class Conv1DTransposeTest(tf.test.TestCase, parameterized.TestCase):
 
     # prepare streaming model
     model_stream = utils.to_streaming_inference(
-        model, params, Modes.STREAM_INTERNAL_STATE_INFERENCE)
+        model, params, modes.Modes.STREAM_INTERNAL_STATE_INFERENCE)
     model_stream.summary()
 
     # run inference
     non_stream_out = model.predict(inp_audio)
-    stream_out = test.run_stream_inference(params, model_stream, inp_audio)
+    stream_out = inference.run_stream_inference(params, model_stream, inp_audio)
 
     self.assertAllClose(stream_out, non_stream_out)
 
@@ -129,8 +124,9 @@ class Conv1DTransposeTest(tf.test.TestCase, parameterized.TestCase):
       # streaming model expected to fail on input data with dynamic shape
       params.data_shape = (None,)
       utils.to_streaming_inference(
-          model, params, Modes.STREAM_INTERNAL_STATE_INFERENCE)
+          model, params, modes.Modes.STREAM_INTERNAL_STATE_INFERENCE)
 
 
 if __name__ == '__main__':
+  tf1.disable_eager_execution()
   tf.test.main()

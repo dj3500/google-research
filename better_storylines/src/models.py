@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Models for next-sentence prediction task on ROCStories.
 """
 
@@ -250,7 +249,7 @@ class ResidualModel(LinearModel):
     return x_input, x
 
 
-@gin.configurable(whitelist=['network_class'])
+@gin.configurable(allowlist=['network_class'])
 def build_model(num_input_sentences,
                 embedding_matrix=None,
                 embedding_dim=None,

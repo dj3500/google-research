@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,19 @@
 # limitations under the License.
 
 """Tests for java_tokenizer."""
-from typing import Sequence
+from typing import Sequence, Tuple
 
 
 from absl.testing import absltest
 from absl.testing import parameterized
 from cubert import java_tokenizer
 from cubert import unified_tokenizer
+
+
+_NEWLINE_NAME = unified_tokenizer.quote_special(
+    unified_tokenizer.TokenKind.NEWLINE.name)
+_EOS_NAME = unified_tokenizer.quote_special(
+    unified_tokenizer.TokenKind.EOS.name)
 
 
 class JavaTokenizerTest(parameterized.TestCase):
@@ -30,90 +36,171 @@ class JavaTokenizerTest(parameterized.TestCase):
           'nothing',
           '',
           (),
-          (),
       ),
       (
           'same_line',
           """TokenA TokenB""",
-          (0, 0),
-          (0, 7),
-      ),
+          #  0     67
+          (
+              (0, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (0, 6, unified_tokenizer.TokenKind.WHITESPACE),
+              (0, 7, unified_tokenizer.TokenKind.IDENTIFIER),
+              # We skip the EOS token.
+          )),
       (
           'different_lines',
           """TokenA
 TokenB TokenC""",
-          (0,
-           0,  # NEWLINE
-           1, 1),
-          (0,
-           java_tokenizer._MAX_COLUMN,  # NEWLINE
-           0, 7),
-      ),
+          (
+              (0, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (0, 6, unified_tokenizer.TokenKind.NEWLINE),
+              (1, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (1, 6, unified_tokenizer.TokenKind.WHITESPACE),
+              (1, 7, unified_tokenizer.TokenKind.IDENTIFIER),
+          )),
       (
           'comment',
           '''TokenA /** comment */ TokenB''',
-          (0, 0),
-          (0, 22),
-      ),
+          (
+              (0, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (0, 6, unified_tokenizer.TokenKind.WHITESPACE),
+              (0, 7, unified_tokenizer.TokenKind.COMMENT),
+              (0, 21, unified_tokenizer.TokenKind.WHITESPACE),
+              (0, 22, unified_tokenizer.TokenKind.IDENTIFIER),
+          )),
       (
           'multi_line_comment',
           '''TokenA /** comment
 
 */ TokenB''',
-          (0,
-           0, 1,  # NEWLINEs.
-           2),
-          (0,
-           java_tokenizer._MAX_COLUMN, java_tokenizer._MAX_COLUMN,  # NEWLINEs.
-           3),
-      ),
+          (
+              (0, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (0, 6, unified_tokenizer.TokenKind.WHITESPACE),
+              (0, 7, unified_tokenizer.TokenKind.COMMENT),
+              (2, 2, unified_tokenizer.TokenKind.WHITESPACE),
+              (2, 3, unified_tokenizer.TokenKind.IDENTIFIER),
+          )),
+      (
+          'multi_line_whitespace',
+          # pylint:disable = trailing-whitespace
+          # After "TokenA" there are 3 spaces that should be dropped by
+          # the tokenizer.
+          # Before "TokenB" there are 2 spaces that should not be dropped.
+          '''TokenA
+
+  TokenB''',
+          # pylint:enable = trailing-whitespace
+          (
+              (0, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (0, 6, unified_tokenizer.TokenKind.NEWLINE),
+              (1, 0, unified_tokenizer.TokenKind.NEWLINE),
+              (2, 0, unified_tokenizer.TokenKind.WHITESPACE),
+              (2, 2, unified_tokenizer.TokenKind.IDENTIFIER),
+          )),
+      (
+          'first_character_invalid',
+          'TokenA\n#TokenB',
+          (
+              (0, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (0, 6, unified_tokenizer.TokenKind.NEWLINE),
+              (1, 0, unified_tokenizer.TokenKind.ERROR),
+              (1, 1, unified_tokenizer.TokenKind.IDENTIFIER),
+          )),
+      (
+          'middle_character_invalid',
+          'TokenA#TokenB',
+          (
+              (0, 0, unified_tokenizer.TokenKind.IDENTIFIER),
+              (0, 6, unified_tokenizer.TokenKind.ERROR),
+              (0, 7, unified_tokenizer.TokenKind.IDENTIFIER),
+          )),
+      (
+          'unterminated_string',
+          'TokenA "mystring',
+          (
+              # For any lexer errors, we just abort and return an error.
+              (0, 0, unified_tokenizer.TokenKind.ERROR),
+          )),
+      (
+          'newline_in_string',
+          'TokenA "\nmystring";',
+          (
+              # This is invalid, abort and return an error.
+              (0, 0, unified_tokenizer.TokenKind.ERROR),
+          )),
+      (
+          'concluding_comment_with_newline',
+          """  /* comment */
+ """,
+          (
+              (0, 0, unified_tokenizer.TokenKind.WHITESPACE),
+              (0, 2, unified_tokenizer.TokenKind.COMMENT),
+              (0, 15, unified_tokenizer.TokenKind.NEWLINE),
+              (1, 0, unified_tokenizer.TokenKind.WHITESPACE),
+          )),
   )
-  def test_tokenization_returns_expected_positions(
-      self, source, expected_lines,
-      expected_columns):
+  def test_abstraction_returns_expected(
+      self, source,
+      expected_starts_and_kinds
+  ):
     tokenizer = java_tokenizer.JavaTokenizer()
 
-    # Produce multi-tokens, right before flattening.
     agnostic = tokenizer.tokenize_and_abstract(source)
-    conditioned = tokenizer.condition_full_tokens(agnostic)
-    multi_tokens = tokenizer.subtokenize_full_tokens(conditioned)[:-1]
-    actual_lines_and_columns = tuple(
-        (m.metadata.start.line, m.metadata.start.column) for m in multi_tokens)
-    expected_lines_and_columns = tuple(zip(expected_lines, expected_columns))
+    actual_starts_and_kinds = tuple(
+        (m.metadata.start.line, m.metadata.start.column, m.kind)
+        for m in agnostic[:-1])
 
-    self.assertSequenceEqual(expected_lines_and_columns,
-                             actual_lines_and_columns)
+    self.assertSequenceEqual(expected_starts_and_kinds,
+                             actual_starts_and_kinds)
 
   @parameterized.named_parameters(
-      (
-          'same_line',
-          """TokenA TokenB""",
-          (),
-      ),
-      (
-          'different_lines',
-          """TokenA
-TokenB
+      ('single_line', 'package com.aye.bee.cee;',
+       ('package', ' ', 'com', '.', 'aye', '.', 'bee', '.', 'cee', ';',
+        _EOS_NAME)),
+      ('with_subtokenization', 'public   class CamelCase {',
+       ('public', '   ', 'class', ' ', 'Camel^', 'Case', ' ', '{', _EOS_NAME)),
+      ('multiple_lines', """
+public class CamelCase {
 
-TokenC""",
-          (0, 1, 2),
-      ),
-  )
-  def test_tokenization_returns_expected_newlines(
-      self, source, expected_newline_lines):
+    private static final String SNAKE_CASE = "text string.continued";
+    /* comment */
+
+""",
+       (
+           # Line 0.
+           _NEWLINE_NAME,
+
+           # Line 1.
+           'public', ' ', 'class', ' ', 'Camel^', 'Case', ' ', '{',
+           _NEWLINE_NAME,
+
+           # Line 2.
+           _NEWLINE_NAME,  # Ignores extraneous whitespace on empty line.
+
+           # Line 3.
+           '    ', 'private', ' ', 'static', ' ', 'final', ' ', 'String', ' ',
+           'SNAKE_^', 'CASE', ' ', '=', ' ', '"^', 'text^', ' ^', 'string^',
+           '.^', 'continued^', '"', ';', _NEWLINE_NAME,
+
+           # Line 4.
+           '    ', '/*^', ' ^', 'comment^', ' ^', '*/', _NEWLINE_NAME,
+
+           # Empty line 5.
+           _NEWLINE_NAME,
+
+           # Line 6.
+           _EOS_NAME,
+           )),
+      )
+  def test_tokenize_returns_expected(
+      self, source,
+      expected
+  ):
     tokenizer = java_tokenizer.JavaTokenizer()
 
-    # Produce multi-tokens, right before flattening.
-    agnostic = tokenizer.tokenize_and_abstract(source)
-    conditioned = tokenizer.condition_full_tokens(agnostic)
-    multi_tokens = tokenizer.subtokenize_full_tokens(conditioned)[:-1]
-    actual_newline_lines = tuple(
-        m.metadata.start.line
-        for m in multi_tokens
-        if m.kind == unified_tokenizer.TokenKind.NEWLINE)
+    actual = tokenizer.tokenize(source)
 
-    self.assertSequenceEqual(expected_newline_lines,
-                             actual_newline_lines)
+    self.assertSequenceEqual(expected, actual)
 
 
 if __name__ == '__main__':

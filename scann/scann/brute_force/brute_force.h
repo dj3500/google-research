@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,11 @@
 
 
 
-#ifndef SCANN__BRUTE_FORCE_BRUTE_FORCE_H_
-#define SCANN__BRUTE_FORCE_BRUTE_FORCE_H_
+#ifndef SCANN_BRUTE_FORCE_BRUTE_FORCE_H_
+#define SCANN_BRUTE_FORCE_BRUTE_FORCE_H_
 
+#include <cstdint>
+#include <memory>
 #include <utility>
 
 #include "scann/base/search_parameters.h"
@@ -26,8 +28,7 @@
 #include "scann/distance_measures/distance_measure_base.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 class BruteForceSearcher final : public SingleMachineSearcherBase<T> {
@@ -45,11 +46,10 @@ class BruteForceSearcher final : public SingleMachineSearcherBase<T> {
     return supports_low_level_batching_ ? 128 : 1;
   }
 
-  void set_thread_pool(std::shared_ptr<thread::ThreadPool> p) {
-    pool_ = std::move(p);
-  }
+  void set_thread_pool(std::shared_ptr<ThreadPool> p) { pool_ = std::move(p); }
 
-  using MutationMetadata = UntypedSingleMachineSearcherBase::MutationMetadata;
+  using PrecomputedMutationArtifacts =
+      UntypedSingleMachineSearcherBase::PrecomputedMutationArtifacts;
 
  protected:
   Status FindNeighborsImpl(const DatapointPtr<T>& query,
@@ -72,7 +72,7 @@ class BruteForceSearcher final : public SingleMachineSearcherBase<T> {
   template <typename WhitelistIterator, typename TopN>
   void FindNeighborsOneToOneInternal(const DatapointPtr<T>& query,
                                      const SearchParameters& params,
-                                     WhitelistIterator* whitelist_iterator,
+                                     WhitelistIterator* allowlist_iterator,
                                      TopN* top_n_ptr) const;
 
   template <typename Float>
@@ -80,6 +80,11 @@ class BruteForceSearcher final : public SingleMachineSearcherBase<T> {
       const DenseDataset<Float>& db, const DenseDataset<Float>& queries,
       ConstSpan<SearchParameters> params,
       MutableSpan<NNResultsVector> results) const;
+
+  void FinishBatchedSearchSimple(const DenseDataset<float>& db,
+                                 const DenseDataset<float>& queries,
+                                 ConstSpan<SearchParameters> params,
+                                 MutableSpan<NNResultsVector> results) const;
 
   template <typename Float>
   enable_if_t<!IsSameAny<Float, float, double>(), void> FinishBatchedSearch(
@@ -91,15 +96,11 @@ class BruteForceSearcher final : public SingleMachineSearcherBase<T> {
 
   const bool supports_low_level_batching_;
 
-  std::shared_ptr<thread::ThreadPool> pool_;
-
-  mutable unique_ptr<typename BruteForceSearcher<T>::Mutator> mutator_ =
-      nullptr;
+  std::shared_ptr<ThreadPool> pool_;
 };
 
 SCANN_INSTANTIATE_TYPED_CLASS(extern, BruteForceSearcher);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

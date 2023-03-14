@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,16 +14,24 @@
 
 
 
-#ifndef SCANN__DATA_FORMAT_DOCID_COLLECTION_H_
-#define SCANN__DATA_FORMAT_DOCID_COLLECTION_H_
+#ifndef SCANN_DATA_FORMAT_DOCID_COLLECTION_H_
+#define SCANN_DATA_FORMAT_DOCID_COLLECTION_H_
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/node_hash_map.h"
 #include "scann/data_format/docid_collection_interface.h"
 #include "scann/data_format/internal/short_string_optimized_string.h"
+#include "scann/oss_wrappers/scann_serialize.h"
+#include "scann/utils/common.h"
 #include "scann/utils/types.h"
 #include "scann/utils/util_functions.h"
+#include "tensorflow/core/lib/core/errors.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 class VariableLengthDocidCollection final : public DocidCollectionInterface {
  public:
@@ -81,15 +89,15 @@ class VariableLengthDocidCollection final : public DocidCollectionInterface {
     ~Mutator() final {}
     Status AddDatapoint(string_view docid) final;
     bool LookupDatapointIndex(string_view docid,
-                              DatapointIndex* idx) const final;
+                              DatapointIndex* index) const final;
     Status RemoveDatapoint(string_view docid) final;
-    Status RemoveDatapoint(DatapointIndex idx) final;
+    Status RemoveDatapoint(DatapointIndex index) final;
     void Reserve(size_t size) final;
 
    private:
     explicit Mutator(VariableLengthDocidCollection* docids) : docids_(docids) {}
     VariableLengthDocidCollection* docids_ = nullptr;
-    std::unordered_map<string_view, DatapointIndex, absl::Hash<string_view>>
+    absl::flat_hash_map<string_view, DatapointIndex, absl::Hash<string_view>>
         docid_lookup_;
   };
 
@@ -119,6 +127,17 @@ class FixedLengthDocidCollection final : public DocidCollectionInterface {
 
   explicit FixedLengthDocidCollection(size_t length) : docid_length_(length) {}
   ~FixedLengthDocidCollection() final {}
+
+  static StatusOr<FixedLengthDocidCollection> Iota(uint32_t length) {
+    FixedLengthDocidCollection docids(sizeof(uint32_t));
+    docids.Reserve(length);
+    for (uint32_t i = 0; i < length; ++i) {
+      std::string encoded;
+      strings::KeyFromUint32(i, &encoded);
+      SCANN_RETURN_IF_ERROR(docids.Append(encoded));
+    }
+    return docids;
+  }
 
   Status Append(string_view docid) final;
 
@@ -158,9 +177,9 @@ class FixedLengthDocidCollection final : public DocidCollectionInterface {
     ~Mutator() final {}
     Status AddDatapoint(string_view docid) final;
     bool LookupDatapointIndex(string_view docid,
-                              DatapointIndex* idx) const final;
+                              DatapointIndex* index) const final;
     Status RemoveDatapoint(string_view docid) final;
-    Status RemoveDatapoint(DatapointIndex idx) final;
+    Status RemoveDatapoint(DatapointIndex index) final;
     void Reserve(size_t size) final;
 
    private:
@@ -168,7 +187,7 @@ class FixedLengthDocidCollection final : public DocidCollectionInterface {
     explicit Mutator(FixedLengthDocidCollection* docids) : docids_(docids) {}
 
     FixedLengthDocidCollection* docids_ = nullptr;
-    std::unordered_map<string_view, DatapointIndex, absl::Hash<string_view>>
+    absl::flat_hash_map<string_view, DatapointIndex, absl::Hash<string_view>>
         docid_lookup_;
   };
 
@@ -187,7 +206,6 @@ class FixedLengthDocidCollection final : public DocidCollectionInterface {
   mutable unique_ptr<FixedLengthDocidCollection::Mutator> mutator_ = nullptr;
 };
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,14 @@
 
 
 
-#ifndef SCANN__BASE_RESTRICT_ALLOWLIST_H_
-#define SCANN__BASE_RESTRICT_ALLOWLIST_H_
+#ifndef SCANN_BASE_RESTRICT_ALLOWLIST_H_
+#define SCANN_BASE_RESTRICT_ALLOWLIST_H_
 
+#include <cstdint>
+#include <functional>
 #include <limits>
+#include <utility>
+#include <vector>
 
 #include "gtest/gtest_prod.h"
 #include "scann/oss_wrappers/scann_bits.h"
@@ -25,8 +29,7 @@
 #include "scann/utils/types.h"
 #include "tensorflow/core/platform/macros.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 class RestrictTokenMap;
 class RestrictAllowlistConstView;
@@ -61,7 +64,7 @@ class RestrictAllowlist {
 
   void Resize(size_t num_points, bool default_whitelisted);
 
-  bool CapacityAvailableForAppend(DatapointIndex capacity) const;
+  bool CapacityAvailableForAppend(DatapointIndex dp_index) const;
   bool CapacityAvailableForAppend() const {
     return CapacityAvailableForAppend(num_points_);
   }
@@ -219,7 +222,6 @@ class RestrictAllowlistConstView {
   friend class RestrictAllowlist;
 };
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,12 @@
 
 #include "scann/hashes/internal/stacked_quantizers.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <utility>
 
 #include "scann/data_format/datapoint.h"
 #include "scann/distance_measures/many_to_many/many_to_many.h"
@@ -27,8 +30,7 @@
 #include "scann/utils/gmm_utils.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace asymmetric_hashing_internal {
 
 namespace {
@@ -201,6 +203,7 @@ void StackedQuantizers<T>::Reconstruct(ConstSpan<uint8_t> input,
   const auto num_codebooks = codebook_list.size();
   DCHECK_EQ(num_codebooks, input.size());
   DCHECK_EQ(output.size(), codebook_list[0].dimensionality());
+  std::fill(output.begin(), output.end(), 0);
   for (int i = 0; i < num_codebooks; ++i)
     UpdateSpanByVec(std::plus<FloatT>(), codebook_list[i][input[i]], output);
 }
@@ -211,7 +214,7 @@ StatusOr<
     typename StackedQuantizers<T>::template CodebookList<FloatingTypeFor<T>>>
 StackedQuantizers<T>::Train(const DenseDataset<T>& dataset,
                             const TrainingOptions& opts,
-                            shared_ptr<thread::ThreadPool> pool) {
+                            shared_ptr<ThreadPool> pool) {
   const auto num_datapoints = dataset.size();
   const auto num_codebooks = opts.projector()->num_blocks();
   const auto num_centers = opts.config().num_clusters_per_block();
@@ -330,7 +333,7 @@ StatusOr<typename StackedQuantizers<T>::template CodebookList<double>>
 StackedQuantizers<T>::HierarchicalKMeans(const DenseDataset<double>& dataset,
                                          const TrainingOptions& opts,
                                          int num_codebooks,
-                                         shared_ptr<thread::ThreadPool> pool) {
+                                         shared_ptr<ThreadPool> pool) {
   const auto num_centers = opts.config().num_clusters_per_block();
 
   GmmUtils::Options gmm_opts;
@@ -348,8 +351,8 @@ StackedQuantizers<T>::HierarchicalKMeans(const DenseDataset<double>& dataset,
   for (auto _ : Seq(num_codebooks)) {
     DenseDataset<double> centers;
     vector<vector<DatapointIndex>> labels;
-    SCANN_RETURN_IF_ERROR(
-        gmm.GenericKmeans(residual, num_centers, &centers, &labels));
+    SCANN_RETURN_IF_ERROR(gmm.ComputeKmeansClustering(
+        residual, num_centers, &centers, {.final_partitions = &labels}));
     DCHECK_EQ(labels.size(), num_centers);
 
     DenseDataset<double> buffer;
@@ -432,7 +435,7 @@ Status StackedQuantizers<T>::InitializeCodes(
     const DenseDataset<double>& dataset,
     const DistanceMeasure& quantization_distance,
     CodebookListView<double> codebook_list, CodesList* codes_list,
-    DenseDataset<double>* residual, thread::ThreadPool* pool) {
+    DenseDataset<double>* residual, ThreadPool* pool) {
   DCHECK(codes_list && residual);
   const auto dataset_size = dataset.size();
   const auto num_codebooks = codebook_list.size();
@@ -464,5 +467,4 @@ Status StackedQuantizers<T>::InitializeCodes(
 SCANN_INSTANTIATE_TYPED_CLASS(, StackedQuantizers);
 
 }  // namespace asymmetric_hashing_internal
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

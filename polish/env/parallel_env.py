@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,6 @@
 # limitations under the License.
 
 """Wrapper class for a gym-like environment that can be run in parallel."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 import math
 import os
 import pickle
@@ -299,7 +296,7 @@ class ParallelEnv(object):
         'trajectory_logstds': np.float32,
         'trajectory_per_episode_rewards': np.float32,
         'trajectory_per_episode_lengths': np.float32,
-        'trajectory_dones': np.bool,
+        'trajectory_dones': bool,
         'trajectory_per_step_rewards': np.float32,
         'trajectory_returns': np.float32
     }

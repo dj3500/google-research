@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 """
 
 import flax
-from flax import nn
+from flax.deprecated import nn
 import jax
 import jax.numpy as jnp
 import jax.random as random
@@ -155,7 +155,7 @@ def ncsn_loss(rng,
       (loss, new_model_state), grad = grad_fn(state.optimizer.target)
     grad = jax.lax.pmean(grad, axis_name=pmap_axis_name)
     new_optimizer = optimize_fn(state, grad)
-    new_params_ema = jax.tree_multimap(
+    new_params_ema = jax.tree_map(
         lambda p_ema, p: p_ema * state.ema_rate + p * (1. - state.ema_rate),
         state.params_ema, new_optimizer.target.params)
     step = state.step + 1
@@ -167,7 +167,7 @@ def ncsn_loss(rng,
   else:
     model_ema = state.optimizer.target.replace(params=state.params_ema)
     if loss_per_sigma:
-      loss, _, losses = loss_fn(model_ema)
+      loss, _, losses = loss_fn(model_ema)  # pytype: disable=bad-unpacking
     else:
       loss, *_ = loss_fn(model_ema)
 
@@ -251,7 +251,7 @@ def ddpm_loss(rng,
     ## original DDPM implementation, and seem to be more reasonable.
     ## The impact of this difference on performance is negligible.
     new_optimizer = optimize_fn(state, grad)
-    new_params_ema = jax.tree_multimap(
+    new_params_ema = jax.tree_map(
         lambda p_ema, p: p_ema * state.ema_rate + p * (1. - state.ema_rate),
         state.params_ema, new_optimizer.target.params)
     step = state.step + 1
@@ -267,4 +267,3 @@ def ddpm_loss(rng,
 
   loss = jax.lax.pmean(loss, axis_name=pmap_axis_name)
   return loss, new_state
-

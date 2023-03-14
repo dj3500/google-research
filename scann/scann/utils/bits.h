@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,23 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SCANN__UTILS_BITS_H_
-#define SCANN__UTILS_BITS_H_
+#ifndef SCANN_UTILS_BITS_H_
+#define SCANN_UTILS_BITS_H_
 
 #include <cstddef>
+#include <cstdint>
 
-#include "scann/oss_wrappers/scann_bits.h"
+#include "absl/numeric/bits.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 inline uint32_t NextPowerOfTwo32(uint32_t x) {
-  return (x & (x - 1)) ? 1UL << (32 - bits::CountLeadingZeros32(x)) : x;
+  return (x & (x - 1)) ? 1UL << (32 - absl::countl_zero(x)) : x;
 }
 
 inline uint64_t NextPowerOfTwo64(uint64_t x) {
-  return (x & (x - 1)) ? 1ULL << (64 - bits::CountLeadingZeros64(x)) : x;
+  return (x & (x - 1)) ? 1ULL << (64 - absl::countl_zero(x)) : x;
 }
 
 inline size_t NextPowerOfTwo(size_t x) {
@@ -46,7 +46,6 @@ SCANN_INLINE uint32_t GetFinalMask32(size_t num_datapoints) {
   return remainder_bits ? (1u << remainder_bits) - 1 : 0xFFFFFFFF;
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

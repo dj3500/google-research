@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,25 +25,28 @@ import tf_slim
 
 from poem.core import common
 from poem.core import keypoint_utils
+from poem.core import optimization_utils
 from poem.core import tfe_input_layer
 
 
-def read_batch_from_tfe_tables(input_table_patterns,
-                               batch_sizes,
-                               num_instances_per_record,
-                               shuffle,
-                               num_epochs,
-                               keypoint_names_3d=None,
-                               keypoint_names_2d=None,
-                               min_keypoint_score_2d=-1.0,
-                               shuffle_buffer_size=4096,
-                               num_shards=1,
-                               shard_index=None,
-                               common_module=common,
-                               dataset_class=tf.data.TFRecordDataset,
-                               tfe_parser_creator=None,
-                               seed=None):
-  """Reads data from tf.Example table.
+def read_batch_from_dataset_tables(input_table_patterns,
+                                   batch_sizes,
+                                   num_instances_per_record,
+                                   shuffle,
+                                   num_epochs,
+                                   keypoint_names_3d=None,
+                                   keypoint_names_2d=None,
+                                   min_keypoint_score_2d=-1.0,
+                                   shuffle_buffer_size=4096,
+                                   num_shards=1,
+                                   shard_index=None,
+                                   common_module=common,
+                                   dataset_class=tf.data.TFRecordDataset,
+                                   input_example_parser_creator=None,
+                                   preprocess_fns=None,
+                                   denormalize_keypoints_2d=True,
+                                   seed=None):
+  """Reads data from dataset table.
 
   IMPORTANT: We assume that 2D keypoints from the input have been normalized by
   image size. This function will reads image sizes from the input and
@@ -84,8 +87,11 @@ def read_batch_from_tfe_tables(input_table_patterns,
       must be specified if `num_shards` is greater than 1.
     common_module: A Python module that defines common constants.
     dataset_class: A dataset class to use. Must match input table type.
-    tfe_parser_creator: A function handle for creating tf.Example parser
+    input_example_parser_creator: A function handle for creating parser
       function. If None, uses the default parser creator.
+    preprocess_fns: A list of preprocess function handles for input tables.
+    denormalize_keypoints_2d: A boolean for whether to denormalize 2D keypoints
+      at the end.
     seed: An integer for random seed.
 
   Returns:
@@ -107,9 +113,10 @@ def read_batch_from_tfe_tables(input_table_patterns,
         'include_keypoint_scores_2d': True,
     })
 
-  if tfe_parser_creator is None:
-    tfe_parser_creator = tfe_input_layer.create_tfe_parser
-  parser_fn = tfe_parser_creator(common_module=common_module, **parser_kwargs)
+  if input_example_parser_creator is None:
+    input_example_parser_creator = tfe_input_layer.create_tfe_parser
+  parser_fn = input_example_parser_creator(
+      common_module=common_module, **parser_kwargs)
 
   outputs = tfe_input_layer.read_batch_from_tables(
       input_table_patterns,
@@ -122,10 +129,11 @@ def read_batch_from_tfe_tables(input_table_patterns,
       shuffle_buffer_size=shuffle_buffer_size,
       dataset_class=dataset_class,
       parser_fn=parser_fn,
+      preprocess_fns=preprocess_fns,
       seed=seed)
   outputs = tf.data.make_one_shot_iterator(outputs).get_next()
 
-  if keypoint_names_2d:
+  if keypoint_names_2d and denormalize_keypoints_2d:
     # Since we assume 2D keypoints from the input have been normalized by image
     # size, so we need to denormalize them to restore correctly aspect ratio.
     keypoints_2d = keypoint_utils.denormalize_points_by_image_size(
@@ -150,16 +158,21 @@ def read_batch_from_tfe_tables(input_table_patterns,
 
 def get_learning_rate(schedule_type,
                       init_learning_rate,
+                      decay_steps,
+                      num_warmup_steps=None,
                       global_step=None,
                       **kwargs):
   """Creates learning rate with schedules.
 
   Currently supported schedules include:
-    'EXP_DECAY'
+    'EXP_DECAY', 'LINEAR_DECAY'
 
   Args:
     schedule_type: A string for the type of learning rate schedule to choose.
     init_learning_rate: A float or tensor for the learning rate.
+    decay_steps: A float or tensor for the number of decay steps.
+    num_warmup_steps: An integer for the number of linear warmup training steps.
+      Use None or 0 to skip warmup.
     global_step: A tensor for the global step. If None, uses default value.
     **kwargs: A dictionary of assorted arguments used by learning rate
       schedulers, keyed in the format of '${schedule_type}_${arg}'.
@@ -170,17 +183,44 @@ def get_learning_rate(schedule_type,
   Raises:
     ValueError: If the schedule type is not supported.
   """
-  if schedule_type == 'EXP_DECAY':
-    if global_step is None:
-      global_step = tf.train.get_or_create_global_step()
-    learning_rate = tf.train.exponential_decay(
-        init_learning_rate,
-        global_step=global_step,
-        decay_steps=kwargs.get('EXP_DECAY_decay_steps'),
-        decay_rate=kwargs.get('EXP_DECAY_decay_rate'),
-        staircase=kwargs.get('EXP_DECAY_staircase', False))
-  else:
-    raise ValueError('Unsupported optimizer type: `%s`.' % str(schedule_type))
+  if global_step is None:
+    global_step = tf.train.get_or_create_global_step()
+
+  learning_rate = tf.constant(
+      value=init_learning_rate, shape=[], dtype=tf.float32)
+
+  if schedule_type:
+    if schedule_type == 'EXP_DECAY':
+      learning_rate = tf.train.exponential_decay(
+          init_learning_rate,
+          global_step=global_step,
+          decay_steps=decay_steps,
+          decay_rate=kwargs.get('EXP_DECAY_decay_rate'),
+          staircase=kwargs.get('EXP_DECAY_staircase', False))
+    elif schedule_type == 'LINEAR_DECAY':
+      learning_rate = tf.train.polynomial_decay(
+          init_learning_rate,
+          global_step=global_step,
+          decay_steps=decay_steps,
+          end_learning_rate=kwargs.get('LINEAR_DECAY_end_learning_rate', 0.0),
+          power=1.0,
+          cycle=kwargs.get('LINEAR_DECAY_cycle', False))
+    else:
+      raise ValueError('Unsupported learning rate schedule type: `%s`.' %
+                       str(schedule_type))
+
+  # Implement linear warmup. I.e., if global_step < num_warmup_steps, the
+  # learning rate will be `global_step / num_warmup_steps * init_lr`.
+  if num_warmup_steps:
+    global_steps_float = tf.cast(global_step, dtype=tf.float32)
+    warmup_steps_float = tf.constant(num_warmup_steps, dtype=tf.float32)
+
+    warmup_percent_done = global_steps_float / warmup_steps_float
+    warmup_learning_rate = init_learning_rate * warmup_percent_done
+
+    is_warmup = tf.cast(global_steps_float < warmup_steps_float, tf.float32)
+    learning_rate = ((1.0 - is_warmup) * learning_rate +
+                     is_warmup * warmup_learning_rate)
 
   return learning_rate
 
@@ -189,7 +229,7 @@ def get_optimizer(optimizer_type, learning_rate, **kwargs):
   """Creates optimizer with learning rate.
 
   Currently supported optimizers include:
-    'ADAGRAD'
+    'ADAGRAD', 'ADAM', 'ADAMW'
 
   Args:
     optimizer_type: A string for the type of optimizer to choose.
@@ -214,6 +254,18 @@ def get_optimizer(optimizer_type, learning_rate, **kwargs):
         beta1=kwargs.get('ADAM_beta1', 0.9),
         beta2=kwargs.get('ADAM_beta2', 0.999),
         epsilon=kwargs.get('ADAM_epsilon', 1e-8))
+  elif optimizer_type == 'ADAMW':
+    optimizer = optimization_utils.AdamWeightDecayOptimizer(
+        learning_rate,
+        weight_decay_rate=kwargs.get('ADAMW_weight_decay_rate', 0.1),
+        beta1=kwargs.get('ADAMW_beta1', 0.9),
+        beta2=kwargs.get('ADAMW_beta2', 0.999),
+        epsilon=kwargs.get('ADAMW_epsilon', 1e-8),
+        exclude_from_weight_decay=kwargs.get(
+            'ADAMW_exclude_from_weight_decay', [
+                'BatchNorm', 'bias', 'class_embedding', 'LayerNorm',
+                'MatchingSigmoid', 'PositionalEncoding'
+            ]))
   elif optimizer_type == 'RMSPROP':
     optimizer = tf.train.RMSPropOptimizer(
         learning_rate=learning_rate,
@@ -330,6 +382,40 @@ def get_init_fn(train_dir=None,
       ignore_missing_vars=ignore_missing_vars)
 
 
+def get_clip_grads_fn(max_norm=0.0, max_global_norm=0.0):
+  """Gets gradient clipping function.
+
+  Two gradient clipping operations are support. If `max_norm` is set, each
+  gradient will be rescaled by the norm independently. If `max_global_norm` is
+  set, all gradients will be rescaled so that the total norm of the vector of
+  all their norms does not exceed the value.
+
+  Args:
+    max_norm: A float for the maximum norm value. If non-positive, gradients
+      will not clipped by the norm.
+    max_global_norm: A float for the maximum global norm value. If non-positive,
+      gradients will not clipped by the global norm.
+
+  Returns:
+    A function which takes a list of gradient to variable pairs, performs
+      gradient clipping, and returns the updated list.
+  """
+  if max_norm <= 0.0 and max_global_norm <= 0.0:
+    return None
+
+  def transform_grads_fn(grads_and_vars):
+    if max_norm > 0.0:
+      grads_and_vars = tf_slim.learning.clip_gradient_norms(
+          grads_and_vars, max_norm)
+    if max_global_norm > 0.0:
+      grads, variables = zip(*grads_and_vars)
+      grads, _ = tf.clip_by_global_norm(grads, max_global_norm)
+      grads_and_vars = list(zip(grads, variables))
+    return grads_and_vars
+
+  return transform_grads_fn
+
+
 def add_summary(scalars_to_summarize=None,
                 histograms_to_summarize=None,
                 images_to_summarize=None):
@@ -444,3 +530,63 @@ def stack_embeddings(model_outputs, embedding_keys, common_module=common):
     else:
       raise ValueError('Unsupported embedding key: `%s`.' % str(key))
   return tf.concat(embeddings_to_stack, axis=-2)
+
+
+def get_sigmoid_parameters(name,
+                           raw_a_initial_value=0.0,
+                           b_initial_value=0.0,
+                           a_range=(None, None),
+                           b_range=(None, None),
+                           reuse=tf.AUTO_REUSE):
+  """Gets sigmoid parameter variables.
+
+  Args:
+    name: A string for the variable scope name.
+    raw_a_initial_value: A float for initial value of the raw `a` parameter.
+    b_initial_value: A float for initial value of the `b` parameter.
+    a_range: A tuple of (min, max) range of `a` parameter. Uses None or
+      non-positive value to indicate unspecified boundaries.
+    b_range: A tuple of (min, max) range of `b` parameter. Uses None to indicate
+      unspecified boundaries. Does NOT use non-positive value to indicate
+      unspecified boundaries.
+    reuse: Type of variable reuse.
+
+  Returns:
+    raw_a: A variable for `raw_a` parameter.
+    a: A tensor for `a` parameter.
+    b: A tensor for `b` parameter.
+
+  Raises:
+    ValueError: If `a_range` or `b_range` is invalid.
+  """
+
+  def maybe_clamp(x, x_range, ignored_if_non_positive):
+    """Clamps `x` to `x_range`."""
+    x_min, x_max = x_range
+    if x_min is not None and x_max is not None and x_min > x_max:
+      raise ValueError('Invalid range: %s.' % str(x_range))
+    if (x_min is not None) and (not ignored_if_non_positive or x_min > 0.0):
+      x = tf.math.maximum(x_min, x)
+    if (x_max is not None) and (not ignored_if_non_positive or x_max > 0.0):
+      x = tf.math.minimum(x_max, x)
+    return x
+
+  with tf.variable_scope(name, reuse=reuse):
+    # TODO(liuti): Currently the variable for `raw_a` is named `a` in
+    # checkpoints for historic reasons. Consolidate the naming.
+    raw_a = tf.get_variable(
+        'a',
+        shape=[],
+        dtype=tf.float32,
+        initializer=tf.initializers.constant(raw_a_initial_value))
+    a = tf.nn.elu(raw_a) + 1.0
+    a = maybe_clamp(a, a_range, ignored_if_non_positive=True)
+
+    b = tf.get_variable(
+        'b',
+        shape=[],
+        dtype=tf.float32,
+        initializer=tf.initializers.constant(b_initial_value))
+    b = maybe_clamp(b, b_range, ignored_if_non_positive=False)
+
+  return raw_a, a, b

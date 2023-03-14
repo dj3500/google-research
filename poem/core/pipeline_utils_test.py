@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,11 +30,16 @@ FLAGS = flags.FLAGS
 
 class PipelineUtilsTest(tf.test.TestCase):
 
-  def test_read_batch_from_tfe_tables(self):
-    testdata_dir = 'poem/testdata'  # Assumes $PWD == "google_research/".
+  def test_read_batch_from_dataset_tables(self):
+    testdata_dir = 'poem/testdata'  # Assume $PWD == "google_research/".
+
+    def tile_images(inputs):
+      inputs['tiled_image_sizes'] = tf.tile(inputs['image_sizes'], (1, 2, 2))
+      return inputs
+
     table_path = os.path.join(FLAGS.test_srcdir, testdata_dir,
                               'tfe-2.tfrecords')
-    inputs = pipeline_utils.read_batch_from_tfe_tables(
+    inputs = pipeline_utils.read_batch_from_dataset_tables(
         [table_path, table_path],
         batch_sizes=[4, 2],
         num_instances_per_record=2,
@@ -44,13 +49,15 @@ class PipelineUtilsTest(tf.test.TestCase):
             'LEGACY_3DH36M17').keypoint_names,
         keypoint_names_2d=keypoint_profiles.create_keypoint_profile_or_die(
             'LEGACY_2DCOCO13').keypoint_names,
+        preprocess_fns=[tile_images, tile_images],
         seed=0)
 
     self.assertCountEqual(inputs.keys(), [
-        'image_sizes', 'keypoints_2d', 'keypoint_scores_2d',
-        'keypoint_masks_2d', 'keypoints_3d'
+        'image_sizes', 'tiled_image_sizes', 'keypoints_2d',
+        'keypoint_scores_2d', 'keypoint_masks_2d', 'keypoints_3d'
     ])
     self.assertEqual(inputs['image_sizes'].shape, [6, 2, 2])
+    self.assertEqual(inputs['tiled_image_sizes'].shape, [6, 4, 4])
     self.assertEqual(inputs['keypoints_2d'].shape, [6, 2, 13, 2])
     self.assertEqual(inputs['keypoint_scores_2d'].shape, [6, 2, 13])
     self.assertEqual(inputs['keypoint_masks_2d'].shape, [6, 2, 13])
@@ -59,7 +66,12 @@ class PipelineUtilsTest(tf.test.TestCase):
   def test_add_moving_average(self):
     inputs = tf.zeros([4, 2, 3])
     output_sizes = {'a': 8, 'b': 4}
-    models.simple_model(inputs, output_sizes, is_training=True, name='M')
+    models.simple_model(
+        inputs,
+        output_sizes,
+        sequential_inputs=False,
+        is_training=True,
+        name='M')
     pipeline_utils.add_moving_average(decay=0.9999)
 
     expected_global_variable_shapes = {
@@ -146,7 +158,12 @@ class PipelineUtilsTest(tf.test.TestCase):
   def test_get_moving_average_variables_to_restore(self):
     inputs = tf.zeros([4, 2, 3])
     output_sizes = {'a': 8, 'b': 4}
-    models.simple_model(inputs, output_sizes, is_training=False, name='M')
+    models.simple_model(
+        inputs,
+        output_sizes,
+        sequential_inputs=False,
+        is_training=False,
+        name='M')
     variables_to_restore = (
         pipeline_utils.get_moving_average_variables_to_restore())
 
@@ -223,6 +240,22 @@ class PipelineUtilsTest(tf.test.TestCase):
     self.assertDictEqual(
         {key: var.name for key, var in variables_to_restore.items()},
         expected_variable_to_restore_names)
+
+  def test_get_sigmoid_parameters(self):
+    raw_a, a, b = pipeline_utils.get_sigmoid_parameters(
+        name='test',
+        raw_a_initial_value=1.0,
+        b_initial_value=2.0,
+        a_range=(-0.5, 1.2),
+        b_range=(3.0, 5.0))
+
+    with self.session() as sess:
+      sess.run(tf.global_variables_initializer())
+      raw_a_result, a_result, b_result = sess.run([raw_a, a, b])
+
+    self.assertAlmostEqual(raw_a_result, 1.0)
+    self.assertAlmostEqual(a_result, 1.2)
+    self.assertAlmostEqual(b_result, 3.0)
 
 
 if __name__ == '__main__':

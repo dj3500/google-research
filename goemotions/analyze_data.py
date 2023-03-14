@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# coding=utf-8
-# Copyright 2019 The Google Research Authors.
+# Copyright 2021 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,7 +27,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Script for analyzing the annotations of GoEmotions.
 
 The analysis includes calculating high-level statistics as well as correlation
@@ -87,7 +85,9 @@ def main(_):
   data = pd.concat(dfs)
   print("%d Examples" % (len(set(data["id"]))))
   print("%d Annotations" % len(data))
-  os.makedirs(FLAGS.plot_dir)
+
+  if not os.path.isdir(FLAGS.plot_dir):
+    os.makedirs(FLAGS.plot_dir)
 
   with open(FLAGS.emotion_file, "r") as f:
     all_emotions = f.read().splitlines()
@@ -118,7 +118,7 @@ def main(_):
   corr = ratings.corr()
 
   # Generate a mask for the upper triangle
-  mask = np.zeros_like(corr, dtype=np.bool)
+  mask = np.zeros_like(corr, dtype=bool)
   mask[np.triu_indices_from(mask)] = True
 
   # Set up the matplotlib figure
@@ -181,7 +181,7 @@ def main(_):
       sent_colors[e] = sent_color_map["ambiguous"]
 
   # Generate a mask for the upper triangle
-  mask = np.zeros_like(corr, dtype=np.bool)
+  mask = np.zeros_like(corr, dtype=bool)
   mask[np.diag_indices(mask.shape[0])] = True
 
   # Generate a custom diverging colormap

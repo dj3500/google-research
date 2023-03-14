@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,11 +15,14 @@
 
 """Models parameters (with toy values, for testing)."""
 
+from absl import logging
+
 
 class Params(object):
   """Default parameters for data and feature settings.
 
      These parameters are compatible with command line flags
+     and discribed in /train/base_parser.py
   """
 
   def __init__(self):
@@ -30,13 +33,14 @@ class Params(object):
     self.train = 0
     self.split_data = 1
     self.sample_rate = 16000
-    self.clip_duration_ms = 1000
+    self.clip_duration_ms = 400  # default is 1000
     self.window_size_ms = 40.0
     self.window_stride_ms = 20.0
     self.preprocess = 'raw'
     self.feature_type = 'mfcc_tf'
     self.preemph = 0.0
     self.window_type = 'hann'
+    self.mel_num_bins = 40
     self.mel_lower_edge_hertz = 20.0
     self.mel_upper_edge_hertz = 7000.0
     self.log_epsilon = 1e-12
@@ -44,12 +48,15 @@ class Params(object):
     self.use_tf_fft = 0
     self.mel_non_zero_only = 1
     self.fft_magnitude_squared = False
-    self.mel_num_bins = 40
     self.use_spec_augment = 0
     self.time_masks_number = 2
     self.time_mask_max_size = 10
     self.frequency_masks_number = 2
     self.frequency_mask_max_size = 5
+    self.use_spec_cutout = 0
+    self.spec_cutout_masks_number = 3
+    self.spec_cutout_time_mask_size = 10
+    self.spec_cutout_frequency_mask_size = 5
     self.optimizer = 'adam'
     self.lr_schedule = 'linear'
     self.background_volume = 0.1
@@ -63,11 +70,29 @@ class Params(object):
     self.how_many_training_steps = '10000,10000,10000'
     self.eval_step_interval = 400
     self.learning_rate = '0.0005,0.0001,0.00002'
-    self.batch_size = 100
+    self.batch_size = 1  # default is 100
     self.optimizer_epsilon = 1e-08
     self.resample = 0.15
     self.volume_resample = 0.0
     self.return_softmax = 0
+    self.sp_time_shift_ms = 0.0
+    self.sp_resample = 0.0
+    self.pick_deterministically = 0
+    self.verbosity = logging.INFO
+    self.causal_data_frame_padding = 0
+    self.wav = 1
+    self.data_stride = 1
+    self.quantize = 0
+    self.use_quantize_nbit = 0
+    self.nbit_activation_bits = 8
+    self.nbit_weight_bits = 8
+    self.use_one_step = True
+    self.data_stride = 1
+    self.cond_shape = ()
+
+    # will be updated by update_flags()
+    self.window_stride_samples = None
+    self.window_size_samples = None
 
 
 def att_mh_rnn_params():
@@ -151,6 +176,7 @@ def cnn_stride_params():
   params.dropout1 = 0.5
   params.units2 = '4,4'
   params.act2 = "'linear','relu'"
+  params.data_stride = 2
   return params
 
 
@@ -183,6 +209,17 @@ def tc_resnet_params():
   params.bn_scale = 1
   params.bn_renorm = 0
   params.dropout = 0.2
+  params.use_layer_norm = 0
+
+  # if ln_axis=(-1) then both ln_center and ln_scale has to be = 0, else
+  # model does not converge
+  params.ln_center = 0
+  params.ln_scale = 0
+
+  # For compatibility with streaming and non streaming modes axis has to be -1.
+  # For compatibility with non streaming mode only it can be (1, 3) - it can be
+  # more stable during training.
+  params.ln_axis = '(-1)'
   return params
 
 
@@ -236,6 +273,7 @@ def ds_cnn_params():
   params.cnn2_filters = '4,4'
   params.cnn2_act = "'relu','relu'"
   params.dropout1 = 0.2
+  params.data_stride = 2
   return params
 
 
@@ -283,6 +321,7 @@ def mobilenet_v2_params():
   params.cnn_expansions = '1.5,1.5'
   params.dropout = 0.2
   params.bn_scale = 0
+  params.data_stride = 2
   return params
 
 
@@ -369,7 +408,7 @@ def ds_tc_resnet_params():
   """Parameters for ds_tc_resnet model based on MatchboxNet."""
   params = Params()
   params.model_name = 'ds_tc_resnet'
-  params.padding = 'same'
+  params.ds_padding = "'same','same'"
   params.activation = 'relu'
   params.dropout = 0.0
   params.ds_filters = '4, 4'
@@ -378,7 +417,28 @@ def ds_tc_resnet_params():
   params.ds_kernel_size = '3, 1'
   params.ds_stride = '1, 1'
   params.ds_dilation = '2, 1'
-  params.activation = 'relu'
+  params.ds_pool = '1,1'
+  params.ds_scale = 1
+  params.ds_filter_separable = '1,1'
+  params.ds_max_pool = 0
+  return params
+
+
+def bc_resnet_params():
+  """Parameters for bc_resnet model."""
+  params = Params()
+  params.model_name = 'bc_resnet'
+  params.dropouts = '0.5, 0.5'
+  params.filters = '2, 2'
+  params.blocks_n = '1, 1'
+  params.strides = '(1,1), (1,1)'
+  params.dilations = '(1,1), (1,1)'
+  params.paddings = 'same'
+  params.first_filters = 2
+  params.last_filters = 2
+  params.sub_groups = 1
+  params.max_pool = 0
+  params.pools = '1, 1'
   return params
 
 
@@ -403,4 +463,5 @@ HOTWORD_MODEL_PARAMS = {
     'inception': inception_params(),
     'inception_resnet': inception_resnet_params(),
     'ds_tc_resnet': ds_tc_resnet_params(),
+    'bc_resnet': bc_resnet_params(),
 }

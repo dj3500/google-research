@@ -42,7 +42,7 @@ echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:$HOME/.mujoco/mujoco200/bin" >> ~
 ```
 wget https://repo.anaconda.com/miniconda/Miniconda2-latest-Linux-x86_64.sh
 chmod +x Miniconda2-latest-Linux-x86_64.sh
-chmod +x ./Miniconda2-latest-Linux-x86_64.sh
+./Miniconda2-latest-Linux-x86_64.sh
 ```
 Restart your terminal so the changes take effect.
 
@@ -55,6 +55,7 @@ pip install tensorflow==2.2.0
 pip install tf_agents==0.5.0
 pip install gym==0.13.1
 pip install mujoco-py==2.0.2.10
+pip install tensorflow-probability==0.10.1
 ```
 
 ## Running Experiments

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 
 
 
-#ifndef SCANN__HASHES_ASYMMETRIC_HASHING2_TRAINING_OPTIONS_BASE_H_
-#define SCANN__HASHES_ASYMMETRIC_HASHING2_TRAINING_OPTIONS_BASE_H_
+#ifndef SCANN_HASHES_ASYMMETRIC_HASHING2_TRAINING_OPTIONS_BASE_H_
+#define SCANN_HASHES_ASYMMETRIC_HASHING2_TRAINING_OPTIONS_BASE_H_
 
 #include <limits>
 #include <type_traits>
@@ -23,13 +23,12 @@
 
 #include "scann/data_format/dataset.h"
 #include "scann/distance_measures/distance_measure_base.h"
+#include "scann/oss_wrappers/scann_threadpool.h"
 #include "scann/projection/chunking_projection.h"
 #include "scann/proto/hash.pb.h"
 #include "scann/utils/types.h"
-#include "tensorflow/core/lib/core/threadpool.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace asymmetric_hashing2 {
 
 class TrainingOptionsBase {
@@ -51,9 +50,13 @@ class TrainingOptionsBase {
 
   AsymmetricHasherConfig* mutable_config() { return &conf_; }
 
+  ConstSpan<float> weights() const { return weights_; }
+  void set_weights(vector<float> weights) { weights_ = std::move(weights); }
+
  protected:
   AsymmetricHasherConfig conf_;
   shared_ptr<const DistanceMeasure> quantization_distance_;
+  vector<float> weights_;
 };
 
 template <typename T>
@@ -90,7 +93,6 @@ class TrainingOptionsTyped : public TrainingOptionsBase {
 SCANN_INSTANTIATE_TYPED_CLASS(extern, TrainingOptionsTyped);
 
 }  // namespace asymmetric_hashing2
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

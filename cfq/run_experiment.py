@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -119,6 +119,11 @@ def main(argv):
 
   print_status('Running t2t-datagen')
   # NOTE: This one skips automatically if the files exist.
+  # TODO(danielfurrer): Sometimes one of the steps here will crash with a
+  #                     CUBLAS_STATUS_NOT_INITIALIZED error. I suspect this is
+  #                     related to the subprocess calls here. Rerunning seems to
+  #                     solve the problem (perhaps because t2t-datagen returns
+  #                     quickly if it was completed before).
   subprocess.run([
       't2t-datagen',
       '--t2t_usr_dir=' + t2t_usr_dir,

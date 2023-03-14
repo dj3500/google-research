@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,11 @@
 
 
 
+#include <algorithm>
 #include <limits>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "absl/memory/memory.h"
 #include "absl/synchronization/mutex.h"
@@ -35,11 +39,19 @@
 
 namespace tensorflow {
 namespace scann_ops {
+namespace {
+
+void GetTensorRequireOk(OpKernelContext* context, const absl::string_view name,
+                        const Tensor** tensor) {
+  OP_REQUIRES_OK(context, context->input(name, tensor));
+}
+
+}  // namespace
 
 class ScannResource : public ResourceBase {
  public:
   explicit ScannResource()
-      : scann_(std::make_unique<tensorflow::scann_ops::ScannInterface>()) {}
+      : scann_(std::make_unique<research_scann::ScannInterface>()) {}
 
   string DebugString() const override { return "I am the one who knocks."; }
 
@@ -47,11 +59,32 @@ class ScannResource : public ResourceBase {
 
   void Initialize() { initialized_ = true; }
 
-  std::unique_ptr<tensorflow::scann_ops::ScannInterface> scann_;
+  std::unique_ptr<research_scann::ScannInterface> scann_;
 
  private:
   bool initialized_ = false;
 };
+
+void CreateSearcherFromConfig(OpKernelContext* context,
+                              ScannResource* resource) {
+  const Tensor* config_tensor;
+  const Tensor* db_tensor;
+  const Tensor* threads_tensor;
+  GetTensorRequireOk(context, "scann_config", &config_tensor);
+  GetTensorRequireOk(context, "x", &db_tensor);
+  GetTensorRequireOk(context, "training_threads", &threads_tensor);
+
+  OP_REQUIRES(context, db_tensor->dims() == 2,
+              errors::InvalidArgument("Dataset must be two-dimensional"));
+
+  std::string config = config_tensor->scalar<tstring>()();
+  auto db_span = TensorToConstSpan<float>(db_tensor);
+
+  OP_REQUIRES_OK(context, ConvertStatus(resource->scann_->Initialize(
+                              db_span, db_tensor->dim_size(0), config,
+                              threads_tensor->scalar<int>()())));
+  resource->Initialize();
+}
 
 class ScannCreateSearcherOp : public ResourceOpKernel<ScannResource> {
  public:
@@ -63,32 +96,14 @@ class ScannCreateSearcherOp : public ResourceOpKernel<ScannResource> {
 
     mutex_lock l(mu_);
     if (resource_ && resource_->is_initialized()) return;
-
-    const Tensor* config_tensor;
-    const Tensor* db_tensor;
-    const Tensor* threads_tensor;
-    OP_REQUIRES_OK(context, context->input("scann_config", &config_tensor));
-    OP_REQUIRES_OK(context, context->input("x", &db_tensor));
-    OP_REQUIRES_OK(context,
-                   context->input("training_threads", &threads_tensor));
-
-    OP_REQUIRES(context, db_tensor->dims() == 2,
-                errors::InvalidArgument("Dataset must be two-dimensional"));
-
-    std::string config = config_tensor->scalar<tstring>()();
-    auto db_span = TensorToConstSpan<float>(db_tensor);
-
-    OP_REQUIRES_OK(context, ConvertStatus(resource_->scann_->Initialize(
-                                db_span, db_tensor->dim_size(0), config,
-                                threads_tensor->scalar<int>()())));
-    resource_->Initialize();
+    CreateSearcherFromConfig(context, resource_);
   }
 
  private:
   Status CreateResource(ScannResource** ret)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) override {
     *ret = new ScannResource();
-    return Status::OK();
+    return OkStatus();
   }
 };
 
@@ -100,17 +115,17 @@ class ScannSearchOp : public OpKernel {
     ScannResource* scann_resource;
     OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0),
                                            &scann_resource));
+    tensorflow::core::ScopedUnref unref_me(scann_resource);
 
     const Tensor* query_tensor;
     const Tensor* final_nn_tensor;
     const Tensor* reorder_nn_tensor;
     const Tensor* leaves_tensor;
-    OP_REQUIRES_OK(context, context->input("queries", &query_tensor));
-    OP_REQUIRES_OK(context,
-                   context->input("final_num_neighbors", &final_nn_tensor));
-    OP_REQUIRES_OK(context, context->input("pre_reordering_num_neighbors",
-                                           &reorder_nn_tensor));
-    OP_REQUIRES_OK(context, context->input("leaves_to_search", &leaves_tensor));
+    GetTensorRequireOk(context, "queries", &query_tensor);
+    GetTensorRequireOk(context, "final_num_neighbors", &final_nn_tensor);
+    GetTensorRequireOk(context, "pre_reordering_num_neighbors",
+                       &reorder_nn_tensor);
+    GetTensorRequireOk(context, "leaves_to_search", &leaves_tensor);
 
     OP_REQUIRES(context, query_tensor->dims() == 1,
                 errors::InvalidArgument("Query must be one-dimensional. Use "
@@ -121,9 +136,9 @@ class ScannSearchOp : public OpKernel {
     int pre_reorder_nn = reorder_nn_tensor->scalar<int>()();
 
     auto query_span = TensorToConstSpan<float>(query_tensor);
-    tensorflow::scann_ops::DatapointPtr<float> query_ptr(
+    research_scann::DatapointPtr<float> query_ptr(
         nullptr, query_span.data(), query_span.size(), query_span.size());
-    tensorflow::scann_ops::NNResultsVector res;
+    research_scann::NNResultsVector res;
     OP_REQUIRES_OK(context,
                    ConvertStatus(scann_resource->scann_->Search(
                        query_ptr, &res, final_nn, pre_reorder_nn, leaves)));
@@ -149,19 +164,19 @@ class ScannSearchBatchedOp : public OpKernel {
     ScannResource* scann_resource;
     OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0),
                                            &scann_resource));
+    tensorflow::core::ScopedUnref unref_me(scann_resource);
 
     const Tensor* query_tensor;
     const Tensor* final_nn_tensor;
     const Tensor* reorder_nn_tensor;
     const Tensor* leaves_tensor;
     const Tensor* parallel_tensor;
-    OP_REQUIRES_OK(context, context->input("queries", &query_tensor));
-    OP_REQUIRES_OK(context,
-                   context->input("final_num_neighbors", &final_nn_tensor));
-    OP_REQUIRES_OK(context, context->input("pre_reordering_num_neighbors",
-                                           &reorder_nn_tensor));
-    OP_REQUIRES_OK(context, context->input("leaves_to_search", &leaves_tensor));
-    OP_REQUIRES_OK(context, context->input("parallel", &parallel_tensor));
+    GetTensorRequireOk(context, "queries", &query_tensor);
+    GetTensorRequireOk(context, "final_num_neighbors", &final_nn_tensor);
+    GetTensorRequireOk(context, "pre_reordering_num_neighbors",
+                       &reorder_nn_tensor);
+    GetTensorRequireOk(context, "leaves_to_search", &leaves_tensor);
+    GetTensorRequireOk(context, "parallel", &parallel_tensor);
 
     OP_REQUIRES(context, query_tensor->dims() == 2,
                 errors::InvalidArgument(
@@ -171,11 +186,11 @@ class ScannSearchBatchedOp : public OpKernel {
     int final_nn = final_nn_tensor->scalar<int>()();
     int pre_reorder_nn = reorder_nn_tensor->scalar<int>()();
 
-    tensorflow::scann_ops::DenseDataset<float> queries;
+    research_scann::DenseDataset<float> queries;
     OP_REQUIRES_OK(context, scann_ops::PopulateDenseDatasetFromTensor(
                                 *query_tensor, &queries));
-    std::vector<tensorflow::scann_ops::NNResultsVector> res(queries.size());
-    auto res_span = tensorflow::scann_ops::MakeMutableSpan(res);
+    std::vector<research_scann::NNResultsVector> res(queries.size());
+    auto res_span = research_scann::MakeMutableSpan(res);
     if (parallel_tensor->scalar<bool>()())
       OP_REQUIRES_OK(
           context, ConvertStatus(scann_resource->scann_->SearchBatchedParallel(
@@ -186,8 +201,10 @@ class ScannSearchBatchedOp : public OpKernel {
                          queries, res_span, final_nn, pre_reorder_nn, leaves)));
     Tensor *index_t, *distance_t;
 
-    int64_t num_queries = static_cast<int64_t>(res.size()),
-            num_neighbors = res.empty() ? 0 : res.front().size();
+    int64_t num_queries = static_cast<int64_t>(res.size());
+    int64_t num_neighbors = 0;
+    for (const auto& nn_res : res)
+      num_neighbors = std::max<int64_t>(num_neighbors, nn_res.size());
     OP_REQUIRES_OK(
         context,
         context->allocate_output(
@@ -198,7 +215,7 @@ class ScannSearchBatchedOp : public OpKernel {
                        &distance_t));
     scann_resource->scann_->ReshapeBatchedNNResult(
         res_span, index_t->flat<int32_t>().data(),
-        distance_t->flat<float>().data());
+        distance_t->flat<float>().data(), num_neighbors);
   }
 };
 
@@ -208,11 +225,12 @@ class ScannToTensorsOp : public OpKernel {
       : OpKernel(context) {}
 
   void Compute(OpKernelContext* context) override {
-    using tensorflow::scann_ops::ConstSpan;
+    using research_scann::ConstSpan;
 
     ScannResource* scann_resource;
     OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0),
                                            &scann_resource));
+    tensorflow::core::ScopedUnref unref_me(scann_resource);
 
     auto options_or_status = scann_resource->scann_->ExtractOptions();
     OP_REQUIRES_OK(context, ConvertStatus(options_or_status.status()));
@@ -242,7 +260,7 @@ class ScannToTensorsOp : public OpKernel {
     TensorFromDenseDatasetRequireOk(context, "hashed_dataset",
                                     opts.hashed_dataset.get());
 
-    tensorflow::scann_ops::DenseDataset<int8_t>* int8_dataset = nullptr;
+    research_scann::DenseDataset<int8_t>* int8_dataset = nullptr;
     ConstSpan<float> int8_mults, dp_norms;
     auto int8_struct = opts.pre_quantized_fixed_point;
     if (int8_struct != nullptr) {
@@ -258,21 +276,92 @@ class ScannToTensorsOp : public OpKernel {
     TensorFromDenseDatasetRequireOk(context, "int8_dataset", int8_dataset);
     TensorFromSpanRequireOk(context, "int8_multipliers", int8_mults);
     TensorFromSpanRequireOk(context, "dp_norms", dp_norms);
-    const tensorflow::scann_ops::DenseDataset<float>* dataset = nullptr;
-    if (scann_resource->scann_->needs_dataset()) {
-      auto dataset_untyped = scann_resource->scann_->dataset();
-      OP_REQUIRES(context, dataset_untyped != nullptr,
-                  ConvertStatus(tensorflow::scann_ops::FailedPreconditionError(
-                      "Searcher needs original dataset but none is present.")));
-      dataset = dynamic_cast<const tensorflow::scann_ops::DenseDataset<float>*>(
-          dataset_untyped);
-      OP_REQUIRES(context, dataset != nullptr,
-                  ConvertStatus(tensorflow::scann_ops::InternalError(
-                      "Failed to cast dataset to DenseDataset<float>.")));
-    }
-    TensorFromDenseDatasetRequireOk(context, "dataset", dataset);
+    auto dataset_or = scann_resource->scann_->Float32DatasetIfNeeded();
+    OP_REQUIRES_OK(context, ConvertStatus(dataset_or.status()));
+    TensorFromDenseDatasetRequireOk(context, "dataset", dataset_or->get());
   }
 };
+
+void CreateSearcherFromSerialized(OpKernelContext* context,
+                                  ScannResource* resource) {
+  const Tensor* db_tensor;
+  const Tensor* config_tensor;
+  const Tensor* serialized_partitioner;
+  const Tensor* dp_to_token;
+  const Tensor* ah_codebook;
+  const Tensor* hashed_dataset;
+  const Tensor* int8_dataset;
+  const Tensor* int8_multipliers;
+  const Tensor* dp_norms;
+
+  GetTensorRequireOk(context, "x", &db_tensor);
+  GetTensorRequireOk(context, "scann_config", &config_tensor);
+  GetTensorRequireOk(context, "serialized_partitioner",
+                     &serialized_partitioner);
+  GetTensorRequireOk(context, "datapoint_to_token", &dp_to_token);
+  GetTensorRequireOk(context, "ah_codebook", &ah_codebook);
+  GetTensorRequireOk(context, "hashed_dataset", &hashed_dataset);
+  GetTensorRequireOk(context, "int8_dataset", &int8_dataset);
+  GetTensorRequireOk(context, "int8_multipliers", &int8_multipliers);
+  GetTensorRequireOk(context, "dp_norms", &dp_norms);
+
+  uint32_t n_points = research_scann::kInvalidDatapointIndex;
+  research_scann::ConstSpan<float> dataset;
+  if (db_tensor->dims() != 0) {
+    OP_REQUIRES(context, db_tensor->dims() == 2,
+                errors::InvalidArgument("Dataset must be two-dimensional"));
+    n_points = db_tensor->dim_size(0);
+    dataset = scann_ops::TensorToConstSpan<float>(db_tensor);
+  }
+
+  const tstring& config_tstr = config_tensor->scalar<tstring>()();
+  research_scann::ScannConfig config;
+  config.ParseFromArray(config_tstr.data(), config_tstr.size());
+
+  research_scann::SingleMachineFactoryOptions opts;
+  if (serialized_partitioner->dims() != 0) {
+    opts.serialized_partitioner =
+        std::make_shared<research_scann::SerializedPartitioner>();
+    const tstring& partitioner_tstr =
+        serialized_partitioner->scalar<tstring>()();
+    opts.serialized_partitioner->ParseFromArray(partitioner_tstr.data(),
+                                                partitioner_tstr.size());
+  }
+  if (ah_codebook->dims() != 0) {
+    opts.ah_codebook =
+        std::make_shared<research_scann::CentersForAllSubspaces>();
+    const tstring& codebook_str = ah_codebook->scalar<tstring>()();
+    opts.ah_codebook->ParseFromArray(codebook_str.data(), codebook_str.size());
+  }
+  research_scann::ConstSpan<int32_t> tokenization;
+  research_scann::ConstSpan<uint8_t> hashed_span;
+  if (dp_to_token->dims() != 0) {
+    n_points = dp_to_token->dim_size(0);
+    tokenization = scann_ops::TensorToConstSpan<int32_t>(dp_to_token);
+  }
+  if (hashed_dataset->dims() != 0) {
+    n_points = hashed_dataset->dim_size(0);
+    hashed_span = scann_ops::TensorToConstSpan<uint8_t>(hashed_dataset);
+  }
+
+  research_scann::ConstSpan<int8_t> int8_span;
+  research_scann::ConstSpan<float> int8_multiplier_span, norm_span;
+  if (int8_dataset->dims() != 0) {
+    n_points = int8_dataset->dim_size(0);
+    int8_span = scann_ops::TensorToConstSpan<int8_t>(int8_dataset);
+  }
+  if (int8_multipliers->dims() != 0)
+    int8_multiplier_span =
+        scann_ops::TensorToConstSpan<float>(int8_multipliers);
+  if (dp_norms->dims() != 0)
+    norm_span = scann_ops::TensorToConstSpan<float>(dp_norms);
+
+  OP_REQUIRES_OK(
+      context, ConvertStatus(resource->scann_->Initialize(
+                   config, opts, dataset, tokenization, hashed_span, int8_span,
+                   int8_multiplier_span, norm_span, n_points)));
+  resource->Initialize();
+}
 
 class TensorsToScannOp : public ResourceOpKernel<ScannResource> {
  public:
@@ -284,93 +373,14 @@ class TensorsToScannOp : public ResourceOpKernel<ScannResource> {
 
     mutex_lock l(mu_);
     if (resource_ && resource_->is_initialized()) return;
-
-    const Tensor* db_tensor;
-    const Tensor* config_tensor;
-    const Tensor* serialized_partitioner;
-    const Tensor* dp_to_token;
-    const Tensor* ah_codebook;
-    const Tensor* hashed_dataset;
-    const Tensor* int8_dataset;
-    const Tensor* int8_multipliers;
-    const Tensor* dp_norms;
-
-    OP_REQUIRES_OK(context, context->input("x", &db_tensor));
-    OP_REQUIRES_OK(context, context->input("scann_config", &config_tensor));
-    OP_REQUIRES_OK(context, context->input("serialized_partitioner",
-                                           &serialized_partitioner));
-    OP_REQUIRES_OK(context, context->input("datapoint_to_token", &dp_to_token));
-    OP_REQUIRES_OK(context, context->input("ah_codebook", &ah_codebook));
-    OP_REQUIRES_OK(context, context->input("hashed_dataset", &hashed_dataset));
-    OP_REQUIRES_OK(context, context->input("int8_dataset", &int8_dataset));
-    OP_REQUIRES_OK(context,
-                   context->input("int8_multipliers", &int8_multipliers));
-    OP_REQUIRES_OK(context, context->input("dp_norms", &dp_norms));
-
-    uint32_t n_points = tensorflow::scann_ops::kInvalidDatapointIndex;
-    tensorflow::scann_ops::ConstSpan<float> dataset;
-    if (db_tensor->dims() != 0) {
-      OP_REQUIRES(context, db_tensor->dims() == 2,
-                  errors::InvalidArgument("Dataset must be two-dimensional"));
-      n_points = db_tensor->dim_size(0);
-      dataset = scann_ops::TensorToConstSpan<float>(db_tensor);
-    }
-
-    const tstring& config_tstr = config_tensor->scalar<tstring>()();
-    tensorflow::scann_ops::ScannConfig config;
-    config.ParseFromArray(config_tstr.data(), config_tstr.size());
-
-    tensorflow::scann_ops::SingleMachineFactoryOptions opts;
-    if (serialized_partitioner->dims() != 0) {
-      opts.serialized_partitioner =
-          std::make_shared<tensorflow::scann_ops::SerializedPartitioner>();
-      const tstring& partitioner_tstr =
-          serialized_partitioner->scalar<tstring>()();
-      opts.serialized_partitioner->ParseFromArray(partitioner_tstr.data(),
-                                                  partitioner_tstr.size());
-    }
-    if (ah_codebook->dims() != 0) {
-      opts.ah_codebook =
-          std::make_shared<tensorflow::scann_ops::CentersForAllSubspaces>();
-      const tstring& codebook_str = ah_codebook->scalar<tstring>()();
-      opts.ah_codebook->ParseFromArray(codebook_str.data(),
-                                       codebook_str.size());
-    }
-    tensorflow::scann_ops::ConstSpan<int32_t> tokenization;
-    tensorflow::scann_ops::ConstSpan<uint8_t> hashed_span;
-    if (dp_to_token->dims() != 0) {
-      n_points = dp_to_token->dim_size(0);
-      tokenization = scann_ops::TensorToConstSpan<int32_t>(dp_to_token);
-    }
-    if (hashed_dataset->dims() != 0) {
-      n_points = hashed_dataset->dim_size(0);
-      hashed_span = scann_ops::TensorToConstSpan<uint8_t>(hashed_dataset);
-    }
-
-    tensorflow::scann_ops::ConstSpan<int8_t> int8_span;
-    tensorflow::scann_ops::ConstSpan<float> int8_multiplier_span, norm_span;
-    if (int8_dataset->dims() != 0) {
-      n_points = int8_dataset->dim_size(0);
-      int8_span = scann_ops::TensorToConstSpan<int8_t>(int8_dataset);
-    }
-    if (int8_multipliers->dims() != 0)
-      int8_multiplier_span =
-          scann_ops::TensorToConstSpan<float>(int8_multipliers);
-    if (dp_norms->dims() != 0)
-      norm_span = scann_ops::TensorToConstSpan<float>(dp_norms);
-
-    OP_REQUIRES_OK(context,
-                   ConvertStatus(resource_->scann_->Initialize(
-                       config, opts, dataset, tokenization, hashed_span,
-                       int8_span, int8_multiplier_span, norm_span, n_points)));
-    resource_->Initialize();
+    CreateSearcherFromSerialized(context, resource_);
   }
 
  private:
   Status CreateResource(ScannResource** ret)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) override {
     *ret = new ScannResource();
-    return Status::OK();
+    return OkStatus();
   }
 };
 

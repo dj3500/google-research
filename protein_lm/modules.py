@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Flax Modules."""
-from flax import nn
+from flax.deprecated import nn
 from jax import lax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -231,7 +230,7 @@ class AddLearnedPositionalEncodings(nn.Module):
         cache.store(cache_entry)
         _, _, df = pos_embedding.shape
         pe = lax.dynamic_slice(pos_embedding, jnp.array((0, i, 0)),
-                               jnp.array((1, 1, df)))
+                               (1, 1, df))
     if inputs_positions is None:
       # normal unpacked case:
       return inputs + pe

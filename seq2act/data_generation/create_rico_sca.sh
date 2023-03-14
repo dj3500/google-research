@@ -1,4 +1,4 @@
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ mkdir -p ${PWD}"/seq2act/data/rico_sca/tfexample"
 python -m seq2act.data_generation.create_android_synthetic_dataset \
 --input_dir=${PWD}"/seq2act/data/rico_sca/raw" \
 --output_dir=${PWD}"/seq2act/data/rico_sca/tfexample" \
---filter_file=${PWD}"/seq2act/data_generation/filter.txt" \
+--filter_file=${PWD}"/seq2act/data_generation/filter_24598.txt" \
 --thread_num=10 \
 --shard_num=10 \
 --vocab_file=${PWD}"/seq2act/data_generation/commoncrawl_rico_vocab_subtoken_44462" \

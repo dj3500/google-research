@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,11 @@
 
 
 
-#ifndef SCANN__PARTITIONING_KMEANS_TREE_LIKE_PARTITIONER_H_
-#define SCANN__PARTITIONING_KMEANS_TREE_LIKE_PARTITIONER_H_
+#ifndef SCANN_PARTITIONING_KMEANS_TREE_LIKE_PARTITIONER_H_
+#define SCANN_PARTITIONING_KMEANS_TREE_LIKE_PARTITIONER_H_
+
+#include <cstdint>
+#include <vector>
 
 #include "scann/data_format/datapoint.h"
 #include "scann/distance_measures/distance_measure_base.h"
@@ -23,8 +26,7 @@
 #include "scann/trees/kmeans_tree/kmeans_tree.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 class KMeansTreeLikePartitioner : public Partitioner<T> {
@@ -40,6 +42,7 @@ class KMeansTreeLikePartitioner : public Partitioner<T> {
   using Partitioner<T>::TokensForDatapointWithSpilling;
   using Partitioner<T>::TokensForDatapointWithSpillingBatched;
   using Partitioner<T>::TokenForDatapoint;
+  using Partitioner<T>::TokenForDatapointBatched;
 
   virtual Status TokensForDatapointWithSpilling(
       const DatapointPtr<T>& dptr, int32_t max_centers_override,
@@ -52,6 +55,10 @@ class KMeansTreeLikePartitioner : public Partitioner<T> {
   virtual Status TokenForDatapoint(const DatapointPtr<T>& dptr,
                                    KMeansTreeSearchResult* result) const = 0;
 
+  virtual Status TokenForDatapointBatched(
+      const TypedDataset<T>& queries,
+      std::vector<KMeansTreeSearchResult>* result) const = 0;
+
   virtual StatusOr<Datapoint<float>> ResidualizeToFloat(
       const DatapointPtr<T>& dptr, int32_t token,
       bool normalize_residual_by_cluster_stdev) const = 0;
@@ -61,7 +68,6 @@ class KMeansTreeLikePartitioner : public Partitioner<T> {
   }
 };
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

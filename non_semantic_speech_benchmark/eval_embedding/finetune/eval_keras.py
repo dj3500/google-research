@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Eval a Keras model on embeddings."""
 
 import time
@@ -24,7 +23,7 @@ from absl import logging
 
 import tensorflow.compat.v2 as tf
 
-from non_semantic_speech_benchmark.eval_embedding import eer_metric
+from non_semantic_speech_benchmark.eval_embedding import metrics
 from non_semantic_speech_benchmark.eval_embedding.finetune import get_data
 from non_semantic_speech_benchmark.eval_embedding.finetune import models
 
@@ -69,8 +68,8 @@ def eval_and_report():
   writer = tf.summary.create_file_writer(FLAGS.eval_dir)
   num_classes = len(FLAGS.label_list)
   model = models.get_keras_model(
-      num_classes, FLAGS.ubn, num_clusters=FLAGS.nc,
-      alpha_init=FLAGS.alpha_init)
+      num_classes, input_length=FLAGS.min_length, use_batchnorm=FLAGS.ubn,
+      num_clusters=FLAGS.nc, alpha_init=FLAGS.alpha_init)
   checkpoint = tf.train.Checkpoint(model=model)
 
   for ckpt in tf.train.checkpoints_iterator(
@@ -123,10 +122,14 @@ def eval_and_report():
                    ex_count, count,
                    time.time() - s)
     if FLAGS.calculate_equal_error_rate:
-      eer_score = eer_metric.calculate_eer(all_logits, all_real)
+      eer_score = metrics.calculate_eer(all_real, all_logits)
+    auc_score = metrics.calculate_auc(all_real, all_logits)
+    dprime_score = metrics.dprime_from_auc(auc_score)
     with writer.as_default():
       tf.summary.scalar('accuracy', acc_m.result().numpy(), step=int(step))
       tf.summary.scalar('xent_loss', xent_m.result().numpy(), step=int(step))
+      tf.summary.scalar('auc', auc_score, step=int(step))
+      tf.summary.scalar('dprime', dprime_score, step=int(step))
       if FLAGS.calculate_equal_error_rate:
         tf.summary.scalar('eer', eer_score, step=int(step))
     logging.info('Done with eval step: %s in %.2f secs.', step, time.time() - s)

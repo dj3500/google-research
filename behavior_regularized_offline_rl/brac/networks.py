@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -79,10 +79,11 @@ class ActorNetwork(tf.Module):
             tfd.Normal(loc=tf.zeros(mean.shape), scale=1.0),
             reinterpreted_batch_ndims=1),
         bijector=tfp.bijectors.Chain([
-            tfp.bijectors.AffineScalar(shift=self._action_means,
-                                       scale=self._action_mags),
+            tfp.bijectors.Shift(shift=self._action_means),
+            tfp.bijectors.Scale(scale=self._action_mags),
             tfp.bijectors.Tanh(),
-            tfp.bijectors.AffineScalar(shift=mean, scale=std),
+            tfp.bijectors.Shift(shift=mean),
+            tfp.bijectors.Scale(scale=std),
         ]))
     return a_distribution, a_tanh_mode
 

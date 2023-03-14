@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <memory>
+#include <utility>
 
+#include "absl/synchronization/mutex.h"
 #include "scann/base/restrict_allowlist.h"
 #include "scann/base/search_parameters.h"
 #include "scann/base/single_machine_base.h"
@@ -24,15 +28,12 @@
 #include "scann/distance_measures/one_to_many/one_to_many.h"
 #include "scann/oss_wrappers/scann_down_cast.h"
 #include "scann/utils/common.h"
-
-#include "absl/synchronization/mutex.h"
 #include "scann/utils/fast_top_neighbors.h"
 #include "scann/utils/intrinsics/sse4.h"
 #include "scann/utils/top_n_amortized_constant.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 BruteForceSearcher<T>::BruteForceSearcher(
@@ -62,10 +63,6 @@ Status BruteForceSearcher<T>::EnableCrowdingImpl(
         "number of datapoints.  (",
         datapoint_index_to_crowding_attribute.size(), " vs. ",
         this->dataset()->size(), "."));
-  } else if (mutator_) {
-    return FailedPreconditionError(
-        "Mutation and crowding may not yet be used simultaneously on a single "
-        "BruteForceSearcher instance.");
   }
   return OkStatus();
 }
@@ -161,16 +158,13 @@ unique_ptr<TopNWrapperInterface<ResultType>> MakeTopNWrapper(TopNBase base,
 class FastTopNeighborsWrapper : public TopNWrapperInterface<float> {
  public:
   FastTopNeighborsWrapper(int32_t num_neighbors, float epsilon)
-      : fast_top_neighbors_(num_neighbors, epsilon) {
-    fast_top_neighbors_.AcquireMutator(&mutator_);
-  }
+      : fast_top_neighbors_(num_neighbors, epsilon) {}
 
   void PushBatch(ConstSpan<float> result_block, size_t base_dp_idx) final {
-    return mutator_.PushDistanceBlock(result_block, base_dp_idx);
+    return fast_top_neighbors_.PushBlock(result_block, base_dp_idx);
   }
 
   NNResultsVector TakeUnsorted() final {
-    mutator_.Release();
     NNResultsVector result;
     fast_top_neighbors_.FinishUnsorted(&result);
     return result;
@@ -178,14 +172,69 @@ class FastTopNeighborsWrapper : public TopNWrapperInterface<float> {
 
  private:
   FastTopNeighbors<float> fast_top_neighbors_;
-  FastTopNeighborsMutator<float> mutator_;
+};
+
+class FastTopNeighborsWrapperThreadSafe final
+    : public TopNWrapperInterface<float> {
+ public:
+  FastTopNeighborsWrapperThreadSafe(int32_t num_neighbors, float epsilon)
+      : fast_top_neighbors_(num_neighbors, epsilon), epsilon_(epsilon) {}
+
+  void PushBatch(ConstSpan<float> result_block, size_t base_dp_idx) final {
+    constexpr size_t kBufferSize = 16;
+    pair<DatapointIndex, float> buf[kBufferSize];
+    float eps = epsilon_.load(std::memory_order_relaxed);
+    size_t num_to_push = 0;
+
+    auto locked_push_results = [&] {
+      absl::MutexLock lock(&mutex_);
+      FastTopNeighbors<float>::Mutator mut;
+      fast_top_neighbors_.AcquireMutator(&mut);
+      eps = mut.epsilon();
+      for (size_t i : Seq(num_to_push)) {
+        const float dist = buf[i].second;
+        DCHECK_EQ(eps, mut.epsilon());
+        if (dist > eps) continue;
+        const DatapointIndex dp_idx = buf[i].first;
+        if (mut.Push(dp_idx, dist)) {
+          mut.GarbageCollect();
+          eps = mut.epsilon();
+          epsilon_.store(eps, std::memory_order_relaxed);
+        }
+      }
+      num_to_push = 0;
+    };
+
+    for (size_t i : IndicesOf(result_block)) {
+      const float dist = result_block[i];
+      if (dist > eps) continue;
+      buf[num_to_push++] = {i + base_dp_idx, dist};
+      if (num_to_push == kBufferSize) locked_push_results();
+    }
+    if (num_to_push) locked_push_results();
+  }
+
+  NNResultsVector TakeUnsorted() final {
+    NNResultsVector result;
+    fast_top_neighbors_.FinishUnsorted(&result);
+    return result;
+  }
+
+ private:
+  FastTopNeighbors<float> fast_top_neighbors_;
+  std::atomic<float> epsilon_;
+  mutable absl::Mutex mutex_;
 };
 
 template <typename ResultType>
 unique_ptr<TopNWrapperInterface<ResultType>> MakeNonCrowdingTopN(
     const SearchParameters& params, bool thread_safe) {
   if constexpr (IsSame<ResultType, float>()) {
-    if (!thread_safe) {
+    if (thread_safe) {
+      return make_unique<FastTopNeighborsWrapperThreadSafe>(
+          params.pre_reordering_num_neighbors(),
+          params.pre_reordering_epsilon());
+    } else {
       return make_unique<FastTopNeighborsWrapper>(
           params.pre_reordering_num_neighbors(),
           params.pre_reordering_epsilon());
@@ -217,6 +266,15 @@ BruteForceSearcher<T>::FinishBatchedSearch(
     const DenseDataset<Float>& db, const DenseDataset<Float>& queries,
     ConstSpan<SearchParameters> params,
     MutableSpan<NNResultsVector> results) const {
+  if constexpr (std::is_same_v<Float, float>) {
+    if (std::all_of(params.begin(), params.end(),
+                    [](const SearchParameters& params) {
+                      return !params.pre_reordering_crowding_enabled();
+                    })) {
+      return FinishBatchedSearchSimple(db, queries, params, results);
+    }
+  }
+
   vector<unique_ptr<TopNWrapperInterface<Float>>> top_ns(queries.size());
   for (size_t i : IndicesOf(params)) {
     if (params[i].pre_reordering_crowding_enabled()) {
@@ -236,6 +294,23 @@ BruteForceSearcher<T>::FinishBatchedSearch(
                                  write_to_top_n);
   for (size_t i : IndicesOf(top_ns)) {
     results[i] = top_ns[i]->TakeUnsorted();
+  }
+}
+
+template <typename T>
+void BruteForceSearcher<T>::FinishBatchedSearchSimple(
+    const DenseDataset<float>& db, const DenseDataset<float>& queries,
+    ConstSpan<SearchParameters> params,
+    MutableSpan<NNResultsVector> results) const {
+  vector<FastTopNeighbors<float>> top_ns(queries.size());
+  for (size_t i : IndicesOf(params)) {
+    top_ns[i].Init(params[i].pre_reordering_num_neighbors(),
+                   params[i].pre_reordering_epsilon());
+  }
+  DenseDistanceManyToManyTopK(*distance_, queries, db, MakeMutableSpan(top_ns),
+                              pool_.get());
+  for (size_t i : IndicesOf(top_ns)) {
+    top_ns[i].FinishUnsorted(&results[i]);
   }
 }
 
@@ -272,7 +347,7 @@ Status BruteForceSearcher<T>::FindNeighborsImpl(const DatapointPtr<T>& query,
   } else {
     TopNeighbors<float> top_n(params.pre_reordering_num_neighbors());
     FindNeighborsInternal(query, params, &top_n);
-    *result = top_n.ExtractUnsorted();
+    *result = top_n.TakeUnsorted();
   }
   return OkStatus();
 }
@@ -373,5 +448,4 @@ void BruteForceSearcher<T>::FindNeighborsOneToOneInternal(
 
 SCANN_INSTANTIATE_TYPED_CLASS(, BruteForceSearcher);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

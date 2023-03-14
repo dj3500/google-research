@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,17 +14,18 @@
 
 
 
-#ifndef SCANN__DATA_FORMAT_INTERNAL_SHORT_STRING_OPTIMIZED_STRING_H_
-#define SCANN__DATA_FORMAT_INTERNAL_SHORT_STRING_OPTIMIZED_STRING_H_
+#ifndef SCANN_DATA_FORMAT_INTERNAL_SHORT_STRING_OPTIMIZED_STRING_H_
+#define SCANN_DATA_FORMAT_INTERNAL_SHORT_STRING_OPTIMIZED_STRING_H_
 
+#include <cstdint>
 #include <cstdlib>
+#include <optional>
 
 #include "absl/types/optional.h"
 #include "scann/oss_wrappers/scann_malloc_extension.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 class ShortStringOptimizedString {
  public:
@@ -77,8 +78,8 @@ class ShortStringOptimizedString {
 
   size_t HeapStorageUsed() const {
     if (size() <= kMaxInline) return 0;
-    absl::optional<size_t> true_size =
-        MallocExtension::GetAllocatedSize(heap_string());
+    std::optional<size_t> true_size =
+        tcmalloc::MallocExtension::GetAllocatedSize(heap_string());
     return *true_size;
   }
 
@@ -92,7 +93,7 @@ class ShortStringOptimizedString {
   }
 
  private:
-  static_assert(sizeof(uint32_t) == 4, "The uint32_t typedef is wrong.");
+  static_assert(sizeof(uint32_t) == 4, "The uint32 typedef is wrong.");
 
   static_assert(sizeof(char*) == 4 || sizeof(char*) == 8,
                 "ScaNN only supports 32- and 64-bit flat memory models.");
@@ -136,7 +137,6 @@ class ShortStringOptimizedString {
 
 static_assert(sizeof(ShortStringOptimizedString) == sizeof(string_view), "");
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

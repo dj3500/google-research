@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 
 """Distance utility functions."""
 
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 import tensorflow_probability as tfp
 
 from poem.core import data_utils
@@ -41,10 +41,9 @@ def compute_l2_distances(lhs, rhs, squared=False, keepdims=False):
 
 
 def compute_sigmoid_matching_probabilities(inner_distances,
-                                           a_initializer=None,
-                                           b_initializer=None,
-                                           smoothing=0.1,
-                                           name='MatchingSigmoid'):
+                                           a,
+                                           b,
+                                           smoothing=0.1):
   """Computes sigmoid matching probabilities.
 
   We define sigmoid matching probability as:
@@ -56,31 +55,21 @@ def compute_sigmoid_matching_probabilities(inner_distances,
 
   Args:
     inner_distances: A tensor for inner distances. Shape = [...].
-    a_initializer: A function handle for initializer of `a` parameter. Use None
-      for default initializer.
-    b_initializer: A function handle for initializer of `b` parameter. Use None
-      for default initializer.
-    smoothing: A float for label smoothing constant.
-    name: A string for the variable scope name.
+    a: A tensor for the sigmoid `a` parameter.
+    b: A tensor for the sigmoid `b` parameter.
+    smoothing: A float for probability smoothing constant. Ignored if
+      non-positive.
 
   Returns:
     A tensor for matching probabilities. Shape = [...].
   """
-  with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
-    a = tf.get_variable(
-        'a', shape=[], dtype=tf.float32, initializer=a_initializer)
-    a = tf.nn.elu(a) + 1.0
-    b = tf.get_variable(
-        'b', shape=[], dtype=tf.float32, initializer=b_initializer)
   p = tf.math.sigmoid(-a * inner_distances + b)
-  return (1.0 - smoothing) * p + smoothing / 2.0
+  if smoothing > 0.0:
+    p = (1.0 - smoothing) * p + smoothing / 2.0
+  return p
 
 
-def compute_sigmoid_matching_distances(inner_distances,
-                                       a_initializer=None,
-                                       b_initializer=None,
-                                       smoothing=0.1,
-                                       name='MatchingSigmoid'):
+def compute_sigmoid_matching_distances(inner_distances, a, b, smoothing=0.1):
   """Computes sigmoid matching distances.
 
   Given sigmoid matching probability P(x_1, x_2), we define sigmoid matching
@@ -91,22 +80,16 @@ def compute_sigmoid_matching_distances(inner_distances,
 
   Args:
     inner_distances: A tensor for inner distances. Shape = [...].
-    a_initializer: A function handle for initializer of `a` parameter. Use None
-      for default initializer.
-    b_initializer: A function handle for initializer of `b` parameter. Use None
-      for default initializer.
-    smoothing: A float for label smoothing constant.
-    name: A string for the variable scope name.
+    a: A tensor for the sigmoid `a` parameter.
+    b: A tensor for the sigmoid `b` parameter.
+    smoothing: A float for probability smoothing constant. Ignored if
+      non-positive.
 
   Returns:
     A tensor for matching distances. Shape = [...].
   """
   p = compute_sigmoid_matching_probabilities(
-      inner_distances,
-      a_initializer=a_initializer,
-      b_initializer=b_initializer,
-      smoothing=smoothing,
-      name=name)
+      inner_distances, a=a, b=b, smoothing=smoothing)
   return -tf.math.log(p)
 
 
@@ -172,7 +155,8 @@ def compute_gaussian_likelihoods(
     max_squared_mahalanobis_distance: A float for maximum inner squared
       mahalanobis distance to use. Larger distances will be clipped. Ignored if
       non-positive.
-    smoothing: A float for label smoothing constant. Ignored if non-positive.
+    smoothing: A float for probability smoothing constant. Ignored if
+      non-positive.
 
   Returns:
     A tensor for sample likelihoods. Shape = [..., num_samples].

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,16 @@
 
 #include "scann/distance_measures/one_to_one/cosine_distance.h"
 
+#include <cstdint>
+
+#include "absl/numeric/bits.h"
 #include "scann/oss_wrappers/scann_bits.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
+
+SCANN_DEFINE_DISTANCE_MEASURE_VIRTUAL_METHODS(CosineDistance,
+                                              kEarlyStoppingNotSupported);
+SCANN_REGISTER_DISTANCE_MEASURE(CosineDistance);
 
 double BinaryCosineDistance::GetDistanceDense(
     const DatapointPtr<uint8_t>& a, const DatapointPtr<uint8_t>& b) const {
@@ -25,9 +31,10 @@ double BinaryCosineDistance::GetDistanceDense(
   DimensionIndex num_intersect = 0;
   DimensionIndex a_num_ones = 0, b_num_ones = 0;
   for (size_t i = 0; i < a.nonzero_entries(); ++i) {
-    a_num_ones += bits::CountOnesInByte(a.values()[i]);
-    b_num_ones += bits::CountOnesInByte(b.values()[i]);
-    num_intersect += bits::CountOnesInByte(a.values()[i] & b.values()[i]);
+    a_num_ones += absl::popcount(a.values()[i]);
+    b_num_ones += absl::popcount(b.values()[i]);
+    num_intersect += absl::popcount(
+        static_cast<unsigned char>(a.values()[i] & b.values()[i]));
   }
 
   return 1.0 - (num_intersect / sqrt(static_cast<uint64_t>(a_num_ones) *
@@ -64,5 +71,4 @@ double BinaryCosineDistance::GetDistanceHybrid(
 
 SCANN_REGISTER_DISTANCE_MEASURE(BinaryCosineDistance)
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

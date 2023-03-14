@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,17 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Tests for kws_streaming.layers.conv2d."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
+from kws_streaming.layers import modes
 from kws_streaming.layers.compat import tf
 from kws_streaming.layers.compat import tf1
-from kws_streaming.layers.modes import Modes
 from kws_streaming.layers.stream import Stream
 from kws_streaming.models import utils
 tf1.disable_eager_execution()
@@ -47,7 +42,7 @@ class Conv2DTest(tf.test.TestCase):
 
   def test_non_streaming(self):
     # Standard convolution - used for training.
-    mode = Modes.NON_STREAM_INFERENCE
+    mode = modes.Modes.NON_STREAM_INFERENCE
 
     layer = self._get_conv2d_layer(mode)
     inputs = tf.keras.layers.Input(
@@ -60,7 +55,7 @@ class Conv2DTest(tf.test.TestCase):
 
   def test_streaming_internal_state(self):
     # Streaming convolution with internal state - used for inference.
-    mode = Modes.STREAM_INTERNAL_STATE_INFERENCE
+    mode = modes.Modes.STREAM_INTERNAL_STATE_INFERENCE
 
     layer = self._get_conv2d_layer(mode)
     inputs = tf.keras.layers.Input(
@@ -82,7 +77,7 @@ class Conv2DTest(tf.test.TestCase):
   def test_streaming_external_state(self):
     # Streaming convolution with external state - used for inference.
     # Create a non-streaming model first
-    mode = Modes.TRAINING
+    mode = modes.Modes.TRAINING
     layer = self._get_conv2d_layer(mode)
     inputs = tf.keras.layers.Input(
         shape=(self.time_dim, self.feature_dim, 1), batch_size=self.batch_size)
@@ -90,7 +85,7 @@ class Conv2DTest(tf.test.TestCase):
     model = tf.keras.Model(inputs, outputs)
 
     # Swap to streaming mode
-    mode = Modes.STREAM_EXTERNAL_STATE_INFERENCE
+    mode = modes.Modes.STREAM_EXTERNAL_STATE_INFERENCE
     input_tensors = [
         tf.keras.Input(
             shape=(
@@ -123,7 +118,7 @@ class Conv2DTest(tf.test.TestCase):
 
   def test_dilation(self):
     # Test the logic with dilation rate larger than (1, 1)
-    mode = Modes.STREAM_INTERNAL_STATE_INFERENCE
+    mode = modes.Modes.STREAM_INTERNAL_STATE_INFERENCE
     dilation_rate = (2, 2)
     output_with_dilation = self._get_expected_output(
         dilation_rate=dilation_rate)
@@ -143,7 +138,7 @@ class Conv2DTest(tf.test.TestCase):
 
   def test_stacked_layers(self):
     # Test that the layers play nice with each other
-    mode = Modes.STREAM_INTERNAL_STATE_INFERENCE
+    mode = modes.Modes.STREAM_INTERNAL_STATE_INFERENCE
     stacked_output = self._get_expected_output(stacked=True)
     layer = self._get_conv2d_layer(mode)
     layer2 = self._get_conv2d_layer(mode)

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,22 +15,21 @@
 
 
 #include "scann/distance_measures/many_to_many/many_to_many.h"
+#include "scann/distance_measures/many_to_many/many_to_many_common.h"
 #include "scann/distance_measures/many_to_many/many_to_many_templates.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace mm_internal {
 
 template void DenseDistanceManyToManyImpl(
     const DistanceMeasure &dist, const DenseDataset<float> &queries,
-    const DenseDataset<float> &database, thread::ThreadPool *pool,
-    ManyToManyTop1Callback<float> callback);
+    const DenseDataset<float> &database, ThreadPool *pool,
+    EpsilonFilteringCallback<float> callback);
 
 template Status DenseDistanceManyToManyFP8PretransposedImpl(
     const DistanceMeasure &dist, const DenseDataset<float> &queries,
-    const FP8SimdBlockTransposedDatabase &database, thread::ThreadPool *pool,
-    ManyToManyTop1OffsetWrapper<float> callback);
+    const FP8SimdBlockTransposedDatabase &database, ThreadPool *pool,
+    EpsilonFilteringOffsetWrapper<float> callback);
 
 }  // namespace mm_internal
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,15 +14,14 @@
 
 
 
-#ifndef SCANN__BASE_SINGLE_MACHINE_FACTORY_SCANN_H_
-#define SCANN__BASE_SINGLE_MACHINE_FACTORY_SCANN_H_
+#ifndef SCANN_BASE_SINGLE_MACHINE_FACTORY_SCANN_H_
+#define SCANN_BASE_SINGLE_MACHINE_FACTORY_SCANN_H_
 
 #include "scann/base/single_machine_base.h"
 #include "scann/base/single_machine_factory_options.h"
 #include "scann/utils/factory_helpers.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 class TypedDataset;
@@ -74,15 +73,11 @@ StatusOrSearcherUntyped SingleMachineFactoryLeafSearcherScann(
   SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
                                                           int16_t);       \
   SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
-                                                          uint16_t);      \
-  SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
                                                           int32_t);       \
   SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
                                                           uint32_t);      \
   SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
                                                           int64_t);       \
-  SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
-                                                          uint64_t);      \
   SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
                                                           float);         \
   SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN_FOR_TYPE(extern_keyword, \
@@ -90,7 +85,6 @@ StatusOrSearcherUntyped SingleMachineFactoryLeafSearcherScann(
 
 SCANN_INSTANTIATE_SINGLE_MACHINE_FACTORY_SCANN(extern);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,13 +16,16 @@
 
 #include "scann/projection/random_orthogonal_projection.h"
 
+#include <cstdint>
+#include <memory>
+
 #include "Eigen/Core"
 #include "Eigen/QR"
+#include "absl/memory/memory.h"
 #include "absl/random/random.h"
 #include "scann/utils/datapoint_utils.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 RandomOrthogonalProjection<T>::RandomOrthogonalProjection(
@@ -37,7 +40,7 @@ RandomOrthogonalProjection<T>::RandomOrthogonalProjection(
 
 template <typename T>
 void RandomOrthogonalProjection<T>::Create() {
-  random_.reset(new MTRandom(seed_));
+  random_ = std::make_unique<MTRandom>(seed_);
 
   Eigen::MatrixXf input_matrix(input_dims_, projected_dims_);
 
@@ -89,5 +92,4 @@ Status RandomOrthogonalProjection<T>::ProjectInputImpl(
 DEFINE_PROJECT_INPUT_OVERRIDES(RandomOrthogonalProjection);
 SCANN_INSTANTIATE_TYPED_CLASS(, RandomOrthogonalProjection);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

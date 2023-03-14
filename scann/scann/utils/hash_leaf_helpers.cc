@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,10 @@
 
 #include "scann/utils/hash_leaf_helpers.h"
 
+#include <cstdint>
+#include <memory>
+#include <utility>
+
 #include "absl/synchronization/mutex.h"
 #include "scann/distance_measures/distance_measure_factory.h"
 #include "scann/hashes/asymmetric_hashing2/searcher.h"
@@ -23,8 +27,7 @@
 #include "scann/proto/distance_measure.pb.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace internal {
 namespace {
 
@@ -43,9 +46,9 @@ CreateOrGetAymmetricHashingQuantizationDistance(
 }
 
 template <typename T, typename Lambda>
-shared_ptr<DenseDataset<uint8_t>> IndexDatabase(
-    const TypedDataset<T>& dataset, Lambda index_datapoint_fn,
-    shared_ptr<thread::ThreadPool> pool) {
+shared_ptr<DenseDataset<uint8_t>> IndexDatabase(const TypedDataset<T>& dataset,
+                                                Lambda index_datapoint_fn,
+                                                shared_ptr<ThreadPool> pool) {
   constexpr size_t kIndexingBlockSize = 128;
   vector<Datapoint<uint8_t>> hashed_vec(dataset.size());
   Status status = OkStatus();
@@ -87,8 +90,7 @@ template <typename T>
 StatusOr<TrainedAsymmetricHashingResults<T>>
 HashLeafHelpers<T>::TrainAsymmetricHashingModel(
     shared_ptr<TypedDataset<T>> dataset, const AsymmetricHasherConfig& config,
-    const GenericSearchParameters& params,
-    shared_ptr<thread::ThreadPool> pool) {
+    const GenericSearchParameters& params, shared_ptr<ThreadPool> pool) {
   if (params.pre_reordering_dist == nullptr) {
     return InvalidArgumentError(
         "pre_reordering_dist in GenericSearchParameters is not "
@@ -122,8 +124,7 @@ StatusOrSearcher<T> HashLeafHelpers<T>::AsymmetricHasherFactory(
     shared_ptr<TypedDataset<T>> dataset,
     shared_ptr<DenseDataset<uint8_t>> hashed_dataset,
     const TrainedAsymmetricHashingResults<T>& training_results,
-    const GenericSearchParameters& params,
-    shared_ptr<thread::ThreadPool> pool) {
+    const GenericSearchParameters& params, shared_ptr<ThreadPool> pool) {
   if (!hashed_dataset) {
     if (std::isnan(training_results.noise_shaping_threshold)) {
       hashed_dataset = IndexDatabase<T>(
@@ -137,7 +138,8 @@ StatusOrSearcher<T> HashLeafHelpers<T>::AsymmetricHasherFactory(
           *dataset,
           [&](const DatapointPtr<T>& dptr, Datapoint<uint8_t>* dp) {
             return training_results.indexer->HashWithNoiseShaping(
-                dptr, dp, training_results.noise_shaping_threshold);
+                dptr, dp,
+                {.threshold = training_results.noise_shaping_threshold});
           },
           pool);
     }
@@ -146,11 +148,10 @@ StatusOrSearcher<T> HashLeafHelpers<T>::AsymmetricHasherFactory(
     }
   }
 
-  asymmetric_hashing2::SearcherOptions<T> opts;
+  asymmetric_hashing2::SearcherOptions<T> opts(training_results.queryer,
+                                               training_results.indexer);
   opts.set_asymmetric_lookup_type(training_results.lookup_type);
   opts.set_noise_shaping_threshold(training_results.noise_shaping_threshold);
-  opts.EnableAsymmetricQuerying(training_results.queryer,
-                                training_results.indexer);
   opts.set_fixed_point_lut_conversion_options(
       training_results.fixed_point_lut_conversion_options);
   return StatusOrSearcher<T>(make_unique<asymmetric_hashing2::Searcher<T>>(
@@ -162,8 +163,7 @@ template <typename T>
 StatusOr<TrainedAsymmetricHashingResults<T>>
 HashLeafHelpers<T>::LoadAsymmetricHashingModel(
     const AsymmetricHasherConfig& config, const GenericSearchParameters& params,
-    shared_ptr<thread::ThreadPool> pool,
-    CentersForAllSubspaces* preloaded_codebook) {
+    shared_ptr<ThreadPool> pool, CentersForAllSubspaces* preloaded_codebook) {
   TF_ASSIGN_OR_RETURN(
       auto quantization_distance,
       CreateOrGetAymmetricHashingQuantizationDistance(config, params));
@@ -193,5 +193,4 @@ SCANN_INSTANTIATE_TYPED_CLASS(, TrainedAsymmetricHashingResults);
 SCANN_INSTANTIATE_TYPED_CLASS(, HashLeafHelpers);
 
 }  // namespace internal
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

@@ -1,24 +1,13 @@
 # coding=utf-8
-# Copyright 2019 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """The proposed model training code."""
 
 from __future__ import absolute_import
 from __future__ import division
-from __future__ import print_function
 
 from absl import flags
+import numpy as np
+import tensorflow.compat.v1 as tf
+from tqdm import tqdm
 
 from ieg import utils
 from ieg.dataset_utils.utils import autoaug_batch_process_map_fn
@@ -26,11 +15,6 @@ from ieg.models import networks
 from ieg.models.basemodel import BaseModel
 from ieg.models.custom_ops import logit_norm
 from ieg.models.custom_ops import MixMode
-
-import numpy as np
-import tensorflow.compat.v1 as tf
-from tqdm import tqdm
-
 
 FLAGS = flags.FLAGS
 logging = tf.logging
@@ -44,40 +28,43 @@ class IEG(BaseModel):
     logging.info('Init IEG model')
 
     self.augment = MixMode()
-    self.beta = 0.5  # MixUp hyperparam
-    self.nu = 2      # K value for label guessing
+    self.beta = 0.5
+    self.nu = 2
 
   def set_input(self):
-    with self.strategy.scope():
-
+    if len(self.dataset.train_dataflow.output_shapes[0]) == 3:
+      # Use for cifar
       train_ds = self.dataset.train_dataflow.shuffle(
           buffer_size=self.batch_size * 10).repeat().batch(
               self.batch_size, drop_remainder=True).map(
                   # strong augment each batch data and expand to 5D [Bx2xHxWx3]
-                  # TODO(zizhaoz): can be faster if processing before .batch()
                   autoaug_batch_process_map_fn,
                   num_parallel_calls=tf.data.experimental.AUTOTUNE).prefetch(
                       buffer_size=tf.data.experimental.AUTOTUNE)
+    else:
+      train_ds = self.dataset.train_dataflow.shuffle(
+          buffer_size=self.batch_size * 10).repeat().batch(
+              self.batch_size, drop_remainder=True).prefetch(
+                  buffer_size=tf.data.experimental.AUTOTUNE)
+    # no shuffle for probe, so a batch is class balanced.
+    probe_ds = self.dataset.probe_dataflow.repeat().batch(
+        self.batch_size,
+        drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
 
-      # no shuffle for probe, so a batch is class balanced.
-      probe_ds = self.dataset.probe_dataflow.repeat().batch(
-          self.batch_size, drop_remainder=True).prefetch(
-              buffer_size=tf.data.experimental.AUTOTUNE)
+    val_ds = self.dataset.val_dataflow.batch(
+        FLAGS.val_batch_size, drop_remainder=False).prefetch(
+            buffer_size=tf.data.experimental.AUTOTUNE)
 
-      val_ds = self.dataset.val_dataflow.batch(
-          FLAGS.val_batch_size, drop_remainder=False).prefetch(
-              buffer_size=tf.data.experimental.AUTOTUNE)
+    self.train_input_iterator = (
+        self.strategy.experimental_distribute_dataset(
+            train_ds).make_initializable_iterator())
+    self.probe_input_iterator = (
+        self.strategy.experimental_distribute_dataset(
+            probe_ds).make_initializable_iterator())
 
-      self.train_input_iterator = (
-          self.strategy.experimental_distribute_dataset(
-              train_ds).make_initializable_iterator())
-      self.probe_input_iterator = (
-          self.strategy.experimental_distribute_dataset(
-              probe_ds).make_initializable_iterator())
-
-      self.eval_input_iterator = (
-          self.strategy.experimental_distribute_dataset(
-              val_ds).make_initializable_iterator())
+    self.eval_input_iterator = (
+        self.strategy.experimental_distribute_dataset(
+            val_ds).make_initializable_iterator())
 
   def meta_momentum_update(self, grad, var_name, optimizer):
     # Finds corresponding momentum of a var name
@@ -199,8 +186,7 @@ class IEG(BaseModel):
       losses.append(tf.constant(0, tf.float32))
 
     if FLAGS.consistency_factor > 0:
-      logging.info('Use consistency loss {}'.format(
-          FLAGS.consistency_factor))
+      logging.info('Use consistency loss {}'.format(FLAGS.consistency_factor))
       consis_loss = self.consistency_loss(logits, aug_logits)
       losses.append(consis_loss)
 
@@ -331,7 +317,6 @@ class IEG(BaseModel):
       Returns:
         a set of variables want to observe in Tensorboard
       """
-
       net = self.net
       (all_images, labels), (self.probe_images, self.probe_labels) = inputs
       assert len(all_images.shape) == 5
@@ -426,6 +411,14 @@ class IEG(BaseModel):
     merges.append(tf.summary.scalar('loss/net', net_loss))
     merges.append(tf.summary.scalar('loss/meta', meta_loss))
     merges.append(tf.summary.scalar('acc/meta', mean_metaacc))
+    if hasattr(self, 'eval_acc_on_train'):
+      merges.append(
+          tf.summary.scalar('acc/eval_on_train', self.eval_acc_on_train[0]))
+      merges.append(
+          tf.summary.scalar('acc/eval_on_train_top5',
+                            self.eval_acc_on_train[1]))
+      merges.append(
+          tf.summary.scalar('acc/num_eval', self.eval_acc_on_train[2]))
 
     zw_inds = tf.squeeze(
         tf.where(tf.less_equal(weights, 0), name='zero_weight_index'))
@@ -436,8 +429,7 @@ class IEG(BaseModel):
                 tf.cast(tf.size(zw_inds), tf.float32),
                 tf.cast(tf.size(weights), tf.float32))))
 
-    self.epoch_var = tf.cast(
-        self.global_step / self.iter_epoch, tf.float32, name='epoch')
+    self.epoch_var = tf.cast(self.global_step / self.iter_epoch, tf.float32)
     merges.append(tf.summary.scalar('epoch', self.epoch_var))
     merges.append(tf.summary.scalar('learningrate', self.learning_rate))
     summary = tf.summary.merge(merges)
@@ -455,12 +447,12 @@ class IEG(BaseModel):
       self.initialize_variables()
 
       self.sess.run([
-          self.train_input_iterator.initialize(),
-          self.probe_input_iterator.initialize()
+          self.train_input_iterator.initializer,
+          self.probe_input_iterator.initializer
       ])
-      self.sess.run([self.eval_input_iterator.initialize()])
+      self.sess.run([self.eval_input_iterator.initializer])
 
-      logging.info('Finishes variables initializations')
+      logging.info('Finish variable initialization')
       iter_epoch = self.iter_epoch
 
       self.saver = tf.train.Saver(max_to_keep=4)
@@ -488,7 +480,8 @@ class IEG(BaseModel):
                                                        float(acc),
                                                        float(meta_acc))
         pbar.set_description(message)
-        self.summary_writer.add_summary(merged_summary, iteration)
+        if iteration % 100 == 0 or iteration == 1:
+          self.summary_writer.add_summary(merged_summary, iteration)
 
         # checkpoint
         if self.time_for_evaluation(iteration, lr):

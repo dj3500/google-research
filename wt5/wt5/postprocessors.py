@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -103,7 +103,7 @@ def extractive_explanations(output,
 
   spans = []
   prediction_not_found_in_input = 0
-  input_text = tf.compat.as_text(example["inputs_plaintext"])
+  input_text = tf.compat.as_text(example["inputs_pretokenized"])
   input_text = input_text.replace("\n", " ")
 
   # Removing duplicates from explanations since extractive models can produce
@@ -112,7 +112,7 @@ def extractive_explanations(output,
   final_explanations = []
 
   tokenized_input = tokenizer_fn(input_text)
-  span_array = np.zeros(len(tokenized_input), np.int)
+  span_array = np.zeros(len(tokenized_input), int)
   for e in explanations:
     overlap_tuple = match_fn(tokenized_input, tokenizer_fn(e))
     if overlap_tuple:

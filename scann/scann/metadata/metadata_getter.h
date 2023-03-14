@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,10 @@
 
 
 
-#ifndef SCANN__METADATA_METADATA_GETTER_H_
-#define SCANN__METADATA_METADATA_GETTER_H_
+#ifndef SCANN_METADATA_METADATA_GETTER_H_
+#define SCANN_METADATA_METADATA_GETTER_H_
+
+#include <string>
 
 #include "absl/synchronization/mutex.h"
 #include "scann/data_format/datapoint.h"
@@ -23,8 +25,7 @@
 #include "scann/data_format/features.pb.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 class MetadataGetter;
@@ -40,15 +41,7 @@ class UntypedMetadataGetter {
 
   virtual bool needs_dataset() const;
 
-  virtual tensorflow::scann_ops::TypeTag TypeTag() const = 0;
-
-  virtual StatusOr<std::string> GetByDatapointIndex(
-      DatapointIndex dp_idx) const {
-    return UnimplementedError(
-        StrCat("Cannot get metadata by datapoint index for "
-               "metadata getter type ",
-               typeid(*this).name(), "."));
-  }
+  virtual research_scann::TypeTag TypeTag() const = 0;
 
   virtual ~UntypedMetadataGetter();
 
@@ -61,20 +54,25 @@ class MetadataGetter : public UntypedMetadataGetter {
  public:
   MetadataGetter() {}
 
-  tensorflow::scann_ops::TypeTag TypeTag() const final {
-    return TagForType<T>();
-  }
+  research_scann::TypeTag TypeTag() const final { return TagForType<T>(); }
 
   virtual Status GetMetadata(const TypedDataset<T>* dataset,
                              const DatapointPtr<T>& query,
                              DatapointIndex neighbor_index,
                              std::string* result) const = 0;
 
+  virtual StatusOr<std::string> GetByDatapointIndex(
+      const TypedDataset<T>* dataset, DatapointIndex dp_idx) const {
+    return UnimplementedError(
+        StrCat("Cannot get metadata by datapoint index for "
+               "metadata getter type ",
+               typeid(*this).name(), "."));
+  }
+
  private:
   TF_DISALLOW_COPY_AND_ASSIGN(MetadataGetter);
 };
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
 
 #include "scann/utils/types.h"
 
+#include <string>
+
 #include "absl/flags/flag.h"
 
 ABSL_RETIRED_FLAG(
@@ -21,15 +23,14 @@ ABSL_RETIRED_FLAG(
     "RETIRED!  Previously:  If true, uses FastTopNeighbors in "
     "traditional ScaNN server.  FastTopNeighbors is always used in DR server.");
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 Status DisabledTypeError(TypeTag type_tag) {
   return FailedPreconditionError(
       "The '%s' type (type_tag=%d) has been disabled with the "
       "-DSCANN_DISABLE_UNCOMMON_TYPES compile-time flag. Recompile without "
       "this "
-      "flag if you wish to use types other than {float, uint8_t}",
+      "flag if you wish to use types other than {float, uint8}",
       TypeNameFromTag(type_tag), type_tag);
 }
 
@@ -107,5 +108,4 @@ string_view TypeNameFromTag(TypeTag type_tag) {
   }
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

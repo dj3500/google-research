@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 
 from __future__ import absolute_import
 from __future__ import division
-
 from __future__ import print_function
 
 import sonnet as snt
@@ -32,10 +31,10 @@ def classification_probe(features, labels, n_classes, labeled=None):
     xe = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,
                                                         labels=labels)
     if labeled is not None:
-      xe = xe * tf.to_float(labeled)
+      xe = xe * tf.cast(labeled, tf.float32)
     xe = tf.reduce_mean(xe)
-    acc = tf.reduce_mean(tf.to_float(tf.equal(tf.argmax(logits, axis=1),
-                                              labels)))
+    acc = tf.reduce_mean(
+        tf.cast(tf.equal(tf.argmax(logits, axis=1), labels), tf.float32))
     return xe, acc
 
   return snt.Module(_classification_probe)(features)

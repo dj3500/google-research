@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,12 @@
 
 
 
-#ifndef SCANN__PARTITIONING_KMEANS_TREE_PARTITIONER_H_
-#define SCANN__PARTITIONING_KMEANS_TREE_PARTITIONER_H_
+#ifndef SCANN_PARTITIONING_KMEANS_TREE_PARTITIONER_H_
+#define SCANN_PARTITIONING_KMEANS_TREE_PARTITIONER_H_
 
+#include <cstdint>
 #include <limits>
+#include <vector>
 
 #include "absl/synchronization/mutex.h"
 #include "scann/base/single_machine_base.h"
@@ -29,8 +31,7 @@
 #include "scann/trees/kmeans_tree/training_options.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
@@ -94,8 +95,6 @@ class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
     ASYMMETRIC_HASHING = 3
   };
 
-  using QueryTokenizationType = TokenizationType;
-
   void SetQueryTokenizationType(TokenizationType type) {
     query_tokenization_type_ = type;
   }
@@ -106,9 +105,10 @@ class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
 
   Status TokenForDatapoint(const DatapointPtr<T>& dptr,
                            int32_t* result) const final;
-  Status TokenForDatapointBatched(
-      const TypedDataset<T>& queries, std::vector<int32_t>* results,
-      thread::ThreadPool* pool = nullptr) const final;
+  Status TokenForDatapointBatched(const TypedDataset<T>& queries,
+                                  std::vector<int32_t>* results,
+                                  ThreadPool* pool = nullptr) const final;
+
   Status TokensForDatapointWithSpilling(
       const DatapointPtr<T>& dptr, std::vector<int32_t>* result) const final {
     return TokensForDatapointWithSpillingAndOverride(dptr, 0, result);
@@ -119,7 +119,10 @@ class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
       std::vector<int32_t>* result) const;
 
   Status TokenForDatapoint(const DatapointPtr<T>& dptr,
-                           KMeansTreeSearchResult* result) const;
+                           KMeansTreeSearchResult* result) const final;
+  Status TokenForDatapointBatched(
+      const TypedDataset<T>& queries,
+      std::vector<KMeansTreeSearchResult>* result) const final;
   Status TokensForDatapointWithSpilling(
       const DatapointPtr<T>& dptr, int32_t max_centers_override,
       std::vector<KMeansTreeSearchResult>* result) const final;
@@ -138,8 +141,7 @@ class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
       MutableSpan<std::vector<KMeansTreeSearchResult>> results) const final;
 
   StatusOr<vector<std::vector<DatapointIndex>>> TokenizeDatabase(
-      const TypedDataset<T>& database,
-      thread::ThreadPool* pool_or_null) const override;
+      const TypedDataset<T>& database, ThreadPool* pool_or_null) const override;
 
   StatusOr<Datapoint<float>> ResidualizeToFloat(
       const DatapointPtr<T>& dptr, int32_t token,
@@ -200,21 +202,21 @@ class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
   void SetIsOneLevelTree();
 
   StatusOr<std::vector<KMeansTreeSearchResult>> TokenizeDatabaseImplFastPath(
-      const DenseDataset<T>& database, thread::ThreadPool* pool_or_null) const;
+      const DenseDataset<T>& database, ThreadPool* pool_or_null) const;
 
   template <typename CenterType>
   enable_if_t<!IsSame<T, CenterType>(),
               StatusOr<std::vector<KMeansTreeSearchResult>>>
   TokenizeDatabaseImplFastPath(const DenseDataset<T>& database,
                                const DenseDataset<CenterType>& centers,
-                               thread::ThreadPool* pool_or_null) const;
+                               ThreadPool* pool_or_null) const;
 
   template <typename CenterType>
   enable_if_t<IsSame<T, CenterType>(),
               StatusOr<std::vector<KMeansTreeSearchResult>>>
   TokenizeDatabaseImplFastPath(const DenseDataset<T>& database,
                                const DenseDataset<CenterType>& centers,
-                               thread::ThreadPool* pool_or_null) const;
+                               ThreadPool* pool_or_null) const;
 
   template <typename FloatT>
   std::vector<KMeansTreeSearchResult> PostprocessNearestCenters(
@@ -229,6 +231,20 @@ class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
       return storage;
     }
   }
+
+  TokenizationType cur_tokenization_type() const {
+    DCHECK(this->tokenization_mode() == UntypedPartitioner::QUERY ||
+           this->tokenization_mode() == UntypedPartitioner::DATABASE);
+    return (this->tokenization_mode() == UntypedPartitioner::QUERY)
+               ? query_tokenization_type_
+               : database_tokenization_type_;
+  }
+
+  StatusOr<vector<pair<DatapointIndex, float>>> TokenForDatapointBatchedImpl(
+      const TypedDataset<T>& queries, ThreadPool* pool = nullptr) const;
+
+  vector<KMeansTreeSearchResult> ToKmeansTreeSearchResults(
+      ConstSpan<pair<DatapointIndex, float>> partitions) const;
 
   shared_ptr<const KMeansTree> kmeans_tree_;
 
@@ -271,7 +287,6 @@ class KMeansTreePartitioner final : public KMeansTreeLikePartitioner<T> {
 
 SCANN_INSTANTIATE_TYPED_CLASS(extern, KMeansTreePartitioner);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

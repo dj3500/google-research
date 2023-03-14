@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,26 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SCANN__UTILS_SCANN_CONFIG_UTILS_H_
-#define SCANN__UTILS_SCANN_CONFIG_UTILS_H_
+#ifndef SCANN_UTILS_SCANN_CONFIG_UTILS_H_
+#define SCANN_UTILS_SCANN_CONFIG_UTILS_H_
+
+#include <cstdint>
+#include <string>
 
 #include "scann/data_format/datapoint.h"
 #include "scann/data_format/features.pb.h"
 #include "scann/oss_wrappers/scann_status.h"
+#include "scann/proto/exact_reordering.pb.h"
 #include "scann/proto/input_output.pb.h"
 #include "scann/proto/scann.pb.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 Status CanonicalizeScannConfigForRetrieval(ScannConfig* config);
 
 StatusOr<InputOutputConfig::InMemoryTypes> DetectInMemoryTypeFromDisk(
-    const ScannConfig& config);
+    const ScannConfig& config, const size_t shard = 0);
 
 StatusOr<DimensionIndex> DetectInMemoryDimensionFromDisk(
-    string_view database_wildcard);
+    string_view database_wildcard, const size_t shard = 0);
 
 StatusOr<InputOutputConfig::InMemoryTypes> TagFromGFVFeatureType(
     const GenericFeatureVector::FeatureType& feature_type);
@@ -47,8 +50,6 @@ StatusOr<DimensionIndex> DetectInMemoryDimensionFromGfv(
   return dp.dimensionality();
 }
 
-Normalization NormalizationRequired(string_view distance_measure_name);
-
 Status EnsureCorrectNormalizationForDistanceMeasure(ScannConfig* config);
 
 std::string GetPossiblyPartitionedWildcard(const ScannConfig& config);
@@ -56,7 +57,6 @@ std::string GetPossiblyPartitionedWildcard(const ScannConfig& config);
 int GetNumPartitionedShards(const std::string& partitioner_prefix,
                             int32_t n_epochs);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

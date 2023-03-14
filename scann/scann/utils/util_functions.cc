@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,16 +16,20 @@
 
 #include "scann/utils/util_functions.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <numeric>
+#include <string>
 
 #include "absl/base/internal/sysinfo.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/node_hash_set.h"
 #include "scann/partitioning/partitioner.pb.h"
 #include "scann/proto/exact_reordering.pb.h"
 #include "scann/utils/types.h"
 #include "tensorflow/core/platform/cpu_info.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 #ifdef __SSE3__
 
@@ -89,8 +93,7 @@ void RemoveNeighborsPastLimit(DatapointIndex num_neighbors,
 namespace {
 
 struct PartiallyConsumedNeighborList {
-  protobuf::RepeatedPtrField<NearestNeighbors::Neighbor>* neighbor_list =
-      nullptr;
+  google::protobuf::RepeatedPtrField<NearestNeighbors::Neighbor> neighbor_list;
 
   int pos = 0;
 };
@@ -100,16 +103,9 @@ class PartiallyConsumedNeighborListComparator {
   bool operator()(const PartiallyConsumedNeighborList& a,
                   const PartiallyConsumedNeighborList& b) const {
     DistanceComparator comp;
-    return comp(b.neighbor_list->Get(b.pos), a.neighbor_list->Get(a.pos));
+    return comp(b.neighbor_list.Get(b.pos), a.neighbor_list.Get(a.pos));
   }
 };
-
-void ReleaseAllNeighbors(
-    protobuf::RepeatedPtrField<NearestNeighbors::Neighbor>* list) {
-  while (list->size()) {
-    list->ReleaseLast();
-  }
-}
 
 template <typename Lambda>
 inline NearestNeighbors MergeNeighborListsImpl(
@@ -131,7 +127,7 @@ inline NearestNeighbors MergeNeighborListsImpl(
     total_neighbors += list.neighbor_size();
     PartiallyConsumedNeighborList pc_list;
     if (list.neighbor_size() > 0) {
-      pc_list.neighbor_list = list.mutable_neighbor();
+      pc_list.neighbor_list.Swap(list.mutable_neighbor());
       heap.push_back(pc_list);
     }
     if (list.has_metadata()) {
@@ -141,8 +137,8 @@ inline NearestNeighbors MergeNeighborListsImpl(
     }
   }
 
-  result.mutable_docid()->swap(*neighbor_lists[0].mutable_docid());
-  if (heap.size() == 0) {
+  *result.mutable_docid() = *neighbor_lists[0].mutable_docid();
+  if (heap.empty()) {
     return result;
   }
 
@@ -153,7 +149,7 @@ inline NearestNeighbors MergeNeighborListsImpl(
     std::pop_heap(heap.begin(), heap.end(), comp);
 
     auto merge_from = &heap.back();
-    auto next_neighbor = merge_from->neighbor_list->Mutable(merge_from->pos++);
+    auto next_neighbor = merge_from->neighbor_list.Mutable(merge_from->pos++);
 
     if (should_drop(next_neighbor)) {
       delete next_neighbor;
@@ -161,18 +157,20 @@ inline NearestNeighbors MergeNeighborListsImpl(
       result.mutable_neighbor()->AddAllocated(next_neighbor);
     }
 
-    if (merge_from->pos < merge_from->neighbor_list->size()) {
+    if (merge_from->pos < merge_from->neighbor_list.size()) {
       std::push_heap(heap.begin(), heap.end(), comp);
     } else {
-      ReleaseAllNeighbors(heap.back().neighbor_list);
+      while (!heap.back().neighbor_list.empty()) {
+        heap.back().neighbor_list.UnsafeArenaReleaseLast();
+      }
       heap.pop_back();
     }
   }
 
   auto last_list = &heap.front();
   while (result.neighbor_size() < num_neighbors &&
-         last_list->pos < last_list->neighbor_list->size()) {
-    auto next_neighbor = last_list->neighbor_list->Mutable(last_list->pos++);
+         last_list->pos < last_list->neighbor_list.size()) {
+    auto next_neighbor = last_list->neighbor_list.Mutable(last_list->pos++);
 
     if (should_drop(next_neighbor)) {
       delete next_neighbor;
@@ -182,11 +180,13 @@ inline NearestNeighbors MergeNeighborListsImpl(
   }
 
   for (auto& list : heap) {
-    while (list.neighbor_list->size() > list.pos) {
-      list.neighbor_list->RemoveLast();
+    while (list.neighbor_list.size() > list.pos) {
+      list.neighbor_list.RemoveLast();
     }
 
-    ReleaseAllNeighbors(list.neighbor_list);
+    while (!list.neighbor_list.empty()) {
+      list.neighbor_list.UnsafeArenaReleaseLast();
+    }
   }
 
   for (auto& list : neighbor_lists) {
@@ -217,13 +217,13 @@ void MergeNeighborListsSwapImpl(MutableSpan<NearestNeighbors*> neighbor_lists,
     total_neighbors += list->neighbor_size();
     PartiallyConsumedNeighborList pc_list;
     if (list->neighbor_size() > 0) {
-      pc_list.neighbor_list = list->mutable_neighbor();
+      pc_list.neighbor_list.Swap(list->mutable_neighbor());
       heap.push_back(pc_list);
     }
   }
 
-  result->mutable_docid()->swap(*neighbor_lists[0]->mutable_docid());
-  if (heap.size() == 0) {
+  *result->mutable_docid() = *neighbor_lists[0]->mutable_docid();
+  if (heap.empty()) {
     return;
   }
 
@@ -234,12 +234,12 @@ void MergeNeighborListsSwapImpl(MutableSpan<NearestNeighbors*> neighbor_lists,
     std::pop_heap(heap.begin(), heap.end(), comp);
 
     auto merge_from = &heap.back();
-    auto next_neighbor = merge_from->neighbor_list->Mutable(merge_from->pos++);
+    auto next_neighbor = merge_from->neighbor_list.Mutable(merge_from->pos++);
     if (!should_drop(next_neighbor)) {
       result->add_neighbor()->Swap(next_neighbor);
     }
 
-    if (merge_from->pos < merge_from->neighbor_list->size()) {
+    if (merge_from->pos < merge_from->neighbor_list.size()) {
       std::push_heap(heap.begin(), heap.end(), comp);
     } else {
       heap.pop_back();
@@ -248,8 +248,8 @@ void MergeNeighborListsSwapImpl(MutableSpan<NearestNeighbors*> neighbor_lists,
 
   auto last_list = &heap.front();
   while (result->neighbor_size() < num_neighbors &&
-         last_list->pos < last_list->neighbor_list->size()) {
-    auto next_neighbor = last_list->neighbor_list->Mutable(last_list->pos++);
+         last_list->pos < last_list->neighbor_list.size()) {
+    auto next_neighbor = last_list->neighbor_list.Mutable(last_list->pos++);
     if (!should_drop(next_neighbor)) {
       result->add_neighbor()->Swap(next_neighbor);
     }
@@ -270,7 +270,7 @@ NearestNeighbors MergeNeighborLists(
 NearestNeighbors MergeNeighborListsWithCrowding(
     MutableSpan<NearestNeighbors> neighbor_lists, int num_neighbors,
     int per_crowding_attribute_num_neighbors) {
-  std::unordered_map<int64_t, int> crowding_counts;
+  absl::flat_hash_map<int64_t, int> crowding_counts;
   auto is_crowded_out = [&crowding_counts,
                          per_crowding_attribute_num_neighbors](
                             const NearestNeighbors::Neighbor* nn) {
@@ -283,7 +283,7 @@ NearestNeighbors MergeNeighborListsWithCrowding(
 
 NearestNeighbors MergeNeighborListsRemoveDuplicateDocids(
     MutableSpan<NearestNeighbors> neighbor_lists, int num_neighbors) {
-  std::unordered_set<std::string> prev_docids;
+  absl::node_hash_set<std::string> prev_docids;
   auto docid_seen = [&prev_docids](const NearestNeighbors::Neighbor* nn) {
     auto iter = prev_docids.find(nn->docid());
     if (iter == prev_docids.end()) {
@@ -307,7 +307,7 @@ void MergeNeighborListsSwap(MutableSpan<NearestNeighbors*> neighbor_lists,
 void MergeNeighborListsWithCrowdingSwap(
     MutableSpan<NearestNeighbors*> neighbor_lists, int num_neighbors,
     int per_crowding_attribute_num_neighbors, NearestNeighbors* result) {
-  std::unordered_map<int64_t, int> crowding_counts;
+  absl::flat_hash_map<int64_t, int> crowding_counts;
   auto is_crowded_out = [&crowding_counts,
                          per_crowding_attribute_num_neighbors](
                             const NearestNeighbors::Neighbor* nn) {
@@ -316,15 +316,6 @@ void MergeNeighborListsWithCrowdingSwap(
   };
   MergeNeighborListsSwapImpl(neighbor_lists, num_neighbors, is_crowded_out,
                              result);
-}
-
-void LogCPUInfo() {
-  LOG(INFO) << "CPU Info:\n"
-            << "Model number:  " << port::CPUModelNum() << "\n"
-            << "Clock speed:  " << port::NominalCPUFrequency() / 1.0e9
-            << " GHz\n"
-            << "Num logical CPU cores:  " << port::NumTotalCPUs() << "\n"
-            << "Num hyperthreads per core:  " << port::CPUIDNumSMT();
 }
 
 void PackNibblesDatapoint(const DatapointPtr<uint8_t>& hash,
@@ -371,5 +362,4 @@ void UnpackNibblesDatapoint(ConstSpan<uint8_t> packed,
   }
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 # limitations under the License.
 
 """Base parser with training/testing data speech features flags ."""
-
 
 import argparse
 from absl import logging
@@ -115,6 +114,15 @@ def base_parser():
       default=100.0,
       help="""\
       Range to randomly shift the training audio by in time.
+      It is done during audio data reading.
+      """)
+  parser.add_argument(
+      '--sp_time_shift_ms',
+      type=float,
+      default=0.0,
+      help="""\
+      Range to randomly shift the training audio by in time.
+      It is dones in speech feature extractor.
       """)
   parser.add_argument(
       '--testing_percentage',
@@ -215,6 +223,13 @@ def base_parser():
       help='Resample input signal to generate more data [0.0...0.15].',
   )
   parser.add_argument(
+      '--sp_resample',
+      type=float,
+      default=0.0,
+      help='Resample input signal to generate more data [0.0...0.15]. '
+      'It is dones in speech feature extractor. '
+  )
+  parser.add_argument(
       '--volume_resample',
       type=float,
       default=0.0,
@@ -302,6 +317,34 @@ def base_parser():
       help='The desired top edge of the highest frequency band',
   )
   parser.add_argument(
+      '--micro_enable_pcan',
+      type=bool,
+      default=True,
+      help='If True then micro preprocessing uses PCAN auto gain control',
+  )
+  parser.add_argument(
+      '--micro_features_scale',
+      type=float,
+      default=(10. / 256.0),
+      help='Scalar multiplier value applied to micro features.  Note feature '
+           'values are directly proportional to this value and inversely '
+           'proportional to out_scale value.',
+  )
+  parser.add_argument(
+      '--micro_min_signal_remaining',
+      type=float,
+      default=0.05,
+      help='Fraction of signal to preserve when smoothing, set to 1.0 for no '
+           'spectral subtraction smoothing',
+  )
+  parser.add_argument(
+      '--micro_out_scale',
+      type=int,
+      default=1,
+      help='Divides all filterbanks in micro preprocessing by this number',
+  )
+
+  parser.add_argument(
       '--log_epsilon',
       type=float,
       default=1e-12,
@@ -371,11 +414,125 @@ def base_parser():
       help='SpecAugment parameter frequency_mask_max_size.',
   )
   parser.add_argument(
+      '--use_spec_cutout',
+      type=int,
+      default=0,
+      help='use SpecCutout',
+  )
+  parser.add_argument(
+      '--spec_cutout_masks_number',
+      type=int,
+      default=3,
+      help='SpecCutout number of masks',
+  )
+  parser.add_argument(
+      '--spec_cutout_time_mask_size',
+      type=int,
+      default=10,
+      help='SpecCutout masks size in time dim',
+  )
+  parser.add_argument(
+      '--spec_cutout_frequency_mask_size',
+      type=int,
+      default=5,
+      help='SpecCutout masks size in frequency dim',
+  )
+  parser.add_argument(
       '--return_softmax',
       type=int,
       default=0,
-      help='Use softmax in the model: '
-      ' 0 for SparseCategoricalCrossentropy '
-      ' 1 for CategoricalCrossentropy '
+      help='Use softmax layer in the model: '
+      ' 0 for SparseCategoricalCrossentropy(from_logits=True) '
+      ' 1 for SparseCategoricalCrossentropy(from_logits=False) '
   )
+  parser.add_argument(
+      '--novograd_beta_1',
+      type=float,
+      default=0.95,
+      help='The exponential decay rate for the 1st moment estimates',
+  )
+  parser.add_argument(
+      '--novograd_beta_2',
+      type=float,
+      default=0.5,
+      help='The exponential decay rate for the 2nd moment estimates',
+  )
+  parser.add_argument(
+      '--novograd_weight_decay',
+      type=float,
+      default=0.001,
+      help='Weight decay for each param',
+  )
+  parser.add_argument(
+      '--novograd_grad_averaging',
+      type=int,
+      default=0,
+      help='Determines whether to use Adam style exponential moving averaging '
+      'for the first order moments',
+  )
+  parser.add_argument(
+      '--pick_deterministically',
+      type=int,
+      default=0,
+      help='Pick training data in every epoch deterministically',
+  )
+  parser.add_argument(
+      '--causal_data_frame_padding',
+      type=int,
+      default=0,
+      help='Apply causal padding on DataFrame layer',
+  )
+  parser.add_argument(
+      '--wav',
+      type=int,
+      default=1,
+      help='Use data in wav format, otherwise use numpy',
+  )
+  parser.add_argument(
+      '--quantize',
+      type=int,
+      default=0,
+      help='Apply quantization aware training',
+  )
+  parser.add_argument(
+      '--use_quantize_nbit',
+      type=int,
+      default=0,
+      help=('Apply default_n_bit quantization aware training.'),
+  )
+  parser.add_argument(
+      '--nbit_activation_bits',
+      type=int,
+      default=8,
+      help=('Sets default_n_bit model layer activation bits. Operator fusion '
+            'and TFLite conversion is not guaranteed for values other than 8.'),
+  )
+  parser.add_argument(
+      '--nbit_weight_bits',
+      type=int,
+      default=8,
+      help=('Sets default_n_bit model layer weight bits.'),
+  )
+  parser.add_argument(
+      '--data_stride',
+      type=int,
+      default=1,
+      help='Total data stride, reqired for model streaming. '
+      'In streaming mode, by default model receives audio data enough '
+      'for one frame so that it can return one output. But if model '
+      'has striding or pooling then data_stride should be equal to '
+      'product of all pools and strides to produce several frames per call.',
+  )
+  parser.add_argument(
+      '--restore_checkpoint',
+      type=int,
+      default=0,
+      help='If 1 it will restore a checkpoint and resume the training '
+      'by initializing model weights and optimizer with checkpoint values. '
+      'It will use learning rate and number of training iterations from '
+      '--learning_rate and --how_many_training_steps accordinlgy. '
+      'This option is useful in cases when training was interrupted. '
+      'With it you should adjust learning_rate and how_many_training_steps.',
+  )
+
   return parser

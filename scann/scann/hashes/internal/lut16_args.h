@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SCANN__HASHES_INTERNAL_LUT16_ARGS_H_
-#define SCANN__HASHES_INTERNAL_LUT16_ARGS_H_
+#ifndef SCANN_HASHES_INTERNAL_LUT16_ARGS_H_
+#define SCANN_HASHES_INTERNAL_LUT16_ARGS_H_
+
+#include <cstdint>
+#include <functional>
 
 #include "scann/base/restrict_allowlist.h"
 #include "scann/utils/fast_top_neighbors.h"
 #include "scann/utils/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace asymmetric_hashing_internal {
 
 inline constexpr size_t kPrefetchBytesAhead = 768;
@@ -101,7 +103,11 @@ struct LUT16ArgsTopN<float, TopN> : public LUT16ArgsTopNBase<float, TopN> {
 
   ConstSpan<float> fixed_point_multipliers;
 
-  std::function<bool(DatapointIndex)> final_predicate;
+  std::function<DatapointIndex(DatapointIndex)> datapoint_translation_predicate;
+
+  std::function<uint32_t(DatapointIndex, uint32_t,
+                         const std::function<DatapointIndex(DatapointIndex)>&)>
+      batch_filter_predicate;
 };
 
 #define SCANN_INSTANTIATE_CLASS_FOR_LUT16_BATCH_SIZES(EXTERN_KEYWORD,   \
@@ -135,7 +141,6 @@ struct LUT16ArgsTopN<float, TopN> : public LUT16ArgsTopNBase<float, TopN> {
   EXTERN_KEYWORD template class ClassName<9, PrefetchStrategy::kOff>;
 
 }  // namespace asymmetric_hashing_internal
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

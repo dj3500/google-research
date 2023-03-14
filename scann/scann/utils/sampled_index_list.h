@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,15 +14,16 @@
 
 
 
-#ifndef SCANN__UTILS_SAMPLED_INDEX_LIST_H_
-#define SCANN__UTILS_SAMPLED_INDEX_LIST_H_
+#ifndef SCANN_UTILS_SAMPLED_INDEX_LIST_H_
+#define SCANN_UTILS_SAMPLED_INDEX_LIST_H_
+
+#include <variant>
 
 #include "absl/types/variant.h"
 #include "scann/utils/types.h"
 #include "tensorflow/core/platform/macros.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace internal {
 
 template <typename Index>
@@ -44,14 +45,14 @@ class SampledIndexList {
   using SparseIndices = vector<Index>;
 
   const DenseIndices* dense() const {
-    return absl::get_if<DenseIndices>(&indices_);
+    return std::get_if<DenseIndices>(&indices_);
   }
 
   const SparseIndices* sparse() const {
-    return absl::get_if<SparseIndices>(&indices_);
+    return std::get_if<SparseIndices>(&indices_);
   }
 
-  absl::variant<DenseIndices, SparseIndices> indices_;
+  std::variant<DenseIndices, SparseIndices> indices_;
   Index current_;
 };
 
@@ -91,7 +92,6 @@ void SampledIndexList<Index>::RestartIndex() {
 }
 
 }  // namespace internal
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

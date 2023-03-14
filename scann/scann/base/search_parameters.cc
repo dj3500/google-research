@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
 
 #include "scann/base/search_parameters.h"
 
+#include <cmath>
+
 #include "scann/base/restrict_allowlist.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 Status SearchParameters::Validate(bool reordering_enabled) const {
   if (pre_reordering_num_neighbors() <= 0) {
@@ -78,5 +79,4 @@ void SearchParameters::SetUnspecifiedParametersFrom(
   }
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

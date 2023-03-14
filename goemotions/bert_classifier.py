@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # coding=utf-8
-# Copyright 2019 The Google Research Authors.
+# Copyright 2021 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,6 @@ Main changes:
 - Included various evaluation metrics
 - Included evaluation as part of training
 - Included sentiment-based regularization (manually defined)
-- Included entailment-based regularization (manually defined)
 - Included correlation-based regularization (based on training data)
 """
 
@@ -53,17 +52,18 @@ from goemotions.bert import tokenization
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from tensorflow import estimator as tf_estimator
 
 flags = tf.flags
 
 FLAGS = flags.FLAGS
 
 ## Required parameters
-flags.DEFINE_string("emotion_file", "data/emotions.txt",
+flags.DEFINE_string("emotion_file", "goemotions/data/emotions.txt",
                     "File containing a list of emotions.")
 
 flags.DEFINE_string(
-    "data_dir", "data",
+    "data_dir", "goemotions/data",
     "The input data dir. Should contain the .tsv files (or other data files) "
     "for the task.")
 
@@ -116,6 +116,10 @@ flags.DEFINE_bool(
     "do_predict", True,
     "Whether to run the model in inference mode on the test set.")
 
+flags.DEFINE_bool(
+    "do_export", False,
+    "Whether to export the model to SavedModel format.")
+
 flags.DEFINE_integer("train_batch_size", 16, "Total batch size for training.")
 
 flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
@@ -146,9 +150,6 @@ flags.DEFINE_string(
 flags.DEFINE_float("sentiment", 0,
                    "Regularization parameter for sentiment relations.")
 
-flags.DEFINE_float("entailment", 0,
-                   "Regularization parameter for entailment relations.")
-
 flags.DEFINE_float("correlation", 0,
                    "Regularization parameter for emotion correlations.")
 
@@ -164,11 +165,8 @@ flags.DEFINE_integer("iterations_per_loop", 1000,
 flags.DEFINE_integer("eval_steps", None,
                      "How many steps to take to go over the eval set.")
 
-flags.DEFINE_string("sentiment_file", "sentiment_dict.json",
+flags.DEFINE_string("sentiment_file", "goemotions/data/sentiment_dict.json",
                     "Dictionary of sentiment categories.")
-
-flags.DEFINE_string("entailment_file", "entailment_dict.json",
-                    "Dictionary of entailments.")
 
 flags.DEFINE_string(
     "emotion_correlations", None,
@@ -408,7 +406,7 @@ def file_based_input_fn_builder(input_file, seq_length, is_training,
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                  labels, num_labels, multilabel, sent_rels, sentiment,
-                 entailment_rels, entailment, corr_rels, correlation):
+                 corr_rels, correlation):
   """Creates a classification model."""
   model = modeling.BertModel(
       config=bert_config,
@@ -479,14 +477,6 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
     tf.summary.scalar("sentiment_regularization", sent_reg)
     loss += sent_reg
 
-    # Entailment-based regularization
-    ent_reg = tf.multiply(
-        tf.constant(entailment),
-        tf.reduce_mean(
-            tf.multiply(dists, tf.constant(entailment_rels, dtype=tf.float32))))
-    tf.summary.scalar("entailment_regularization", ent_reg)
-    loss += ent_reg
-
     # Correlation-based regularization
     corr_reg = tf.multiply(
         tf.constant(correlation),
@@ -502,9 +492,8 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
 
 def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, multilabel, sent_rels,
-                     sentiment, entailment_rels, entailment, corr_rels,
-                     correlation, idx2emotion, sentiment_groups,
-                     intensity_groups):
+                     sentiment, corr_rels, correlation, idx2emotion,
+                     sentiment_groups):
   """Returns `model_fn` closure for Estimator."""
 
   def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
@@ -519,12 +508,11 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
     segment_ids = features["segment_ids"]
     label_ids = features["label_ids"]
 
-    is_training = (mode == tf.estimator.ModeKeys.TRAIN)
+    is_training = (mode == tf_estimator.ModeKeys.TRAIN)
 
     (total_loss, per_example_loss, logits, probabilities) = create_model(
         bert_config, is_training, input_ids, input_mask, segment_ids, label_ids,
-        num_labels, multilabel, sent_rels, sentiment, entailment_rels,
-        entailment, corr_rels, correlation)
+        num_labels, multilabel, sent_rels, sentiment, corr_rels, correlation)
 
     tvars = tf.trainable_variables()
     initialized_variable_names = {}
@@ -544,7 +532,7 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                       init_string)
 
     output_spec = None
-    if mode == tf.estimator.ModeKeys.TRAIN:
+    if mode == tf_estimator.ModeKeys.TRAIN:
 
       freeze_layer_fn = (None
                          if not FLAGS.freeze_layers else lambda x: "bert" in x)
@@ -556,10 +544,10 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
           use_tpu=False,
           freeze_layer_fn=freeze_layer_fn)
 
-      output_spec = tf.estimator.EstimatorSpec(
+      output_spec = tf_estimator.EstimatorSpec(
           mode=mode, loss=total_loss, train_op=train_op, scaffold=scaffold_fn)
 
-    elif mode == tf.estimator.ModeKeys.EVAL:
+    elif mode == tf_estimator.ModeKeys.EVAL:
 
       # Create dictionary for evaluation metrics
       eval_dict = {}
@@ -665,24 +653,19 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                                   tf.constant(sentiment_groups, dtype=tf.int64),
                                   "sentiment")
 
-        # Calculate emotion-intensity based performance
-        get_relation_based_scores(label_ids, pred_ind,
-                                  tf.constant(intensity_groups, dtype=tf.int64),
-                                  "emotion_intensity")
-
       if multilabel:
         metric_fn_multi(per_example_loss, label_ids, probabilities)
       else:
         metric_fn_single(per_example_loss, label_ids, logits)
 
-      output_spec = tf.estimator.EstimatorSpec(
+      output_spec = tf_estimator.EstimatorSpec(
           mode=mode,
           loss=total_loss,
           eval_metric_ops=eval_dict,
           scaffold=scaffold_fn)
     else:
       print("mode:", mode, "probabilities:", probabilities)
-      output_spec = tf.estimator.EstimatorSpec(
+      output_spec = tf_estimator.EstimatorSpec(
           mode=mode,
           predictions={"probabilities": probabilities},
           scaffold=scaffold_fn)
@@ -716,22 +699,6 @@ def get_sent_rels(emotions):
   return rels
 
 
-def get_entailment_rels(emotions):
-  """Entailment relations between emotions."""
-  with open(FLAGS.entailment_file) as f:
-    entailments = json.loads(f.read())
-  rels = []
-  for e1 in emotions:
-    e1_rels = []
-    for e2 in emotions:
-      if e1 in entailments and e2 in entailments[e1]:
-        e1_rels.append(1)
-      else:
-        e1_rels.append(0)
-    rels.append(e1_rels)
-  return rels
-
-
 def get_correlations(emotions):
   """Get correlations between emotions based training data."""
   corrs = pd.read_csv(FLAGS.emotion_correlations, index_col=0, sep="\t")
@@ -747,22 +714,6 @@ def get_correlations(emotions):
         else:
           e1_rels.append(corrs.loc[e1, e2])
       rels.append(e1_rels)
-  return rels
-
-
-def get_intensity_groups(emotions):
-  """Get emotion-intensity groups for evaluating intensity-based performance."""
-  with open(FLAGS.entailment_file) as f:
-    entailments = json.loads(f.read())
-  rels = []
-  for k, v in entailments.items():
-    grouped_labels = []
-    for e in emotions:
-      if e == k or e in v:
-        grouped_labels.append(1)
-      else:
-        grouped_labels.append(0)
-    rels.append(grouped_labels)
   return rels
 
 
@@ -796,7 +747,6 @@ def main(_):
   print("Multilabel: %r" % FLAGS.multilabel)
 
   sentiment = FLAGS.sentiment
-  entailment = FLAGS.entailment
   correlation = FLAGS.correlation
 
   # Create emotion distance matrix
@@ -809,12 +759,6 @@ def main(_):
     sent_rels = get_sent_rels(all_emotions)
   sent_groups = get_sentiment_groups(all_emotions)
   print(sent_rels)
-  if entailment == 0:
-    entailment_rels = empty_rels
-  else:
-    entailment_rels = get_entailment_rels(all_emotions)
-  intensity_groups = get_intensity_groups(all_emotions)
-  print(entailment_rels)
   if correlation == 0:
     corr_rels = empty_rels
   else:
@@ -826,8 +770,10 @@ def main(_):
   tokenization.validate_case_matches_checkpoint(FLAGS.do_lower_case,
                                                 FLAGS.init_checkpoint)
 
-  if not FLAGS.do_train and not FLAGS.do_predict:
-    raise ValueError("At least one of `do_train` or `do_predict' must be True.")
+  if not FLAGS.do_train and not FLAGS.do_predict and not FLAGS.do_export:
+    raise ValueError(
+        "At least one of `do_train`, `do_predict', or `do_export` must be True."
+    )
 
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
@@ -844,7 +790,7 @@ def main(_):
   tokenizer = tokenization.FullTokenizer(
       vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
 
-  run_config = tf.estimator.RunConfig(
+  run_config = tf_estimator.RunConfig(
       model_dir=FLAGS.output_dir,
       save_summary_steps=FLAGS.save_summary_steps,
       save_checkpoints_steps=FLAGS.save_checkpoints_steps,
@@ -868,7 +814,6 @@ def main(_):
         "num_train_epochs": FLAGS.num_train_epochs,
         "warmup_proportion": FLAGS.warmup_proportion,
         "sentiment": FLAGS.sentiment,
-        "entailment": FLAGS.entailment,
         "correlations": FLAGS.correlation,
         "batch_size": FLAGS.train_batch_size,
         "num_train_examples": len(train_examples),
@@ -892,15 +837,12 @@ def main(_):
       multilabel=FLAGS.multilabel,
       sent_rels=sent_rels,
       sentiment=sentiment,
-      entailment_rels=entailment_rels,
-      entailment=entailment,
       corr_rels=corr_rels,
       correlation=correlation,
       idx2emotion=idx2emotion,
-      sentiment_groups=sent_groups,
-      intensity_groups=intensity_groups)
+      sentiment_groups=sent_groups)
 
-  estimator = tf.estimator.Estimator(
+  estimator = tf_estimator.Estimator(
       model_fn=model_fn,
       config=run_config,
       params={"batch_size": FLAGS.train_batch_size})
@@ -925,7 +867,7 @@ def main(_):
         is_training=True,
         drop_remainder=True,
         num_labels=num_labels)
-    train_spec = tf.estimator.TrainSpec(
+    train_spec = tf_estimator.TrainSpec(
         input_fn=train_input_fn, max_steps=num_train_steps)
     eval_input_fn = file_based_input_fn_builder(
         input_file=eval_file,
@@ -933,13 +875,13 @@ def main(_):
         is_training=False,
         drop_remainder=False,
         num_labels=num_labels)
-    eval_spec = tf.estimator.EvalSpec(
+    eval_spec = tf_estimator.EvalSpec(
         input_fn=eval_input_fn,
         steps=FLAGS.eval_steps,
         start_delay_secs=0,
         throttle_secs=1000)
 
-    tf.estimator.train_and_evaluate(
+    tf_estimator.train_and_evaluate(
         estimator, train_spec=train_spec, eval_spec=eval_spec)
 
   if FLAGS.calculate_metrics:
@@ -1028,6 +970,19 @@ def main(_):
                         "\n")
           num_written_lines += 1
     assert num_written_lines == num_actual_predict_examples
+
+  if FLAGS.do_export:
+    tf.logging.info("***** Exporting to SavedModel *****")
+    feature_spec = {
+        "input_ids": tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+        "input_mask": tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+        "segment_ids": tf.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+        "label_ids": tf.FixedLenFeature([num_labels], tf.int64)
+    }
+    input_receiver = (
+        tf_estimator.export.build_parsing_serving_input_receiver_fn(
+            feature_spec))
+    estimator.export_saved_model(FLAGS.output_dir, input_receiver)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,13 +14,17 @@
 
 #include "scann/brute_force/scalar_quantized_brute_force.h"
 
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "absl/memory/memory.h"
 #include "scann/base/restrict_allowlist.h"
 #include "scann/base/search_parameters.h"
 #include "scann/base/single_machine_base.h"
 #include "scann/data_format/dataset.h"
 #include "scann/distance_measures/one_to_many/one_to_many.h"
-
-#include "absl/memory/memory.h"
 #include "scann/oss_wrappers/scann_status_builder.h"
 #include "scann/utils/fixed_point/pre_quantized_fixed_point.h"
 #include "scann/utils/scalar_quantization_helpers.h"
@@ -29,8 +33,7 @@
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 Status CheckValidDistanceTag(
     AbsDotProductDistance::SpeciallyOptimizedDistanceTag distance_tag) {
@@ -128,7 +131,7 @@ ScalarQuantizedBruteForceSearcher::
                             quantized, inverse_multipliers));
   }
 
-  return absl::make_unique<ScalarQuantizedBruteForceSearcher>(
+  return std::make_unique<ScalarQuantizedBruteForceSearcher>(
       distance, std::move(squared_l2_norms), std::move(quantized),
       std::move(inverse_multipliers), default_num_neighbors, default_epsilon);
 }
@@ -164,7 +167,7 @@ ScalarQuantizedBruteForceSearcher::CreateWithFixedRange(
             quantization_results.inverse_multiplier_by_dimension));
   }
 
-  return absl::make_unique<ScalarQuantizedBruteForceSearcher>(
+  return std::make_unique<ScalarQuantizedBruteForceSearcher>(
       distance, std::move(squared_l2_norms),
       std::move(quantization_results.quantized_dataset),
       std::move(quantization_results.inverse_multiplier_by_dimension),
@@ -193,6 +196,12 @@ Status ScalarQuantizedBruteForceSearcher::FindNeighborsImpl(
   if (!query.IsDense()) {
     return InvalidArgumentError(
         "ScalarQuantizedBruteForceSearcher only works with dense data.");
+  }
+  if (query.dimensionality() != quantized_dataset_.dimensionality()) {
+    return FailedPreconditionError(absl::StrFormat(
+        "Query dimensionality (%d) does not match quantized database "
+        "dimensionality (%d)",
+        query.dimensionality(), quantized_dataset_.dimensionality()));
   }
   DatapointPtr<float> preprocessed;
   unique_ptr<float[]> preproc_buf;
@@ -282,7 +291,7 @@ Status ScalarQuantizedBruteForceSearcher::PostprocessDistancesImpl(
     TopNeighbors<float> top_n(params.pre_reordering_num_neighbors());
     SCANN_RETURN_IF_ERROR(PostprocessTopNImpl(query, params, dot_products,
                                               distance_functor, &top_n));
-    *result = top_n.ExtractUnsorted();
+    *result = top_n.TakeUnsorted();
   }
   return OkStatus();
 }
@@ -367,5 +376,4 @@ ScalarQuantizedBruteForceSearcher::ExtractSingleMachineFactoryOptions() {
   return opts;
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

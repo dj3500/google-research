@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +14,12 @@
 
 #include "scann/utils/memory_logging.h"
 
+#include <string>
+
 #include "absl/strings/str_cat.h"
 #include "scann/oss_wrappers/scann_malloc_extension.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 size_t GfvStorage(const GenericFeatureVector& gfv) {
   size_t result = sizeof(gfv);
@@ -46,13 +47,14 @@ size_t GfvStorage(const vector<GenericFeatureVector>& gfvs) {
 }
 
 std::string GetTcMallocLogString() {
-  size_t allocated_bytes =
-      *MallocExtension::GetNumericProperty("generic.current_allocated_bytes");
-  size_t free_bytes =
-      *MallocExtension::GetNumericProperty("tcmalloc.pageheap_free_bytes");
-  size_t unmapped_bytes =
-      *MallocExtension::GetNumericProperty("tcmalloc.pageheap_unmapped_bytes");
-  size_t heap_size = *MallocExtension::GetNumericProperty("generic.heap_size");
+  size_t allocated_bytes = *tcmalloc::MallocExtension::GetNumericProperty(
+      "generic.current_allocated_bytes");
+  size_t free_bytes = *tcmalloc::MallocExtension::GetNumericProperty(
+      "tcmalloc.pageheap_free_bytes");
+  size_t unmapped_bytes = *tcmalloc::MallocExtension::GetNumericProperty(
+      "tcmalloc.pageheap_unmapped_bytes");
+  size_t heap_size =
+      *tcmalloc::MallocExtension::GetNumericProperty("generic.heap_size");
 
   return absl::StrCat("From TCMalloc:  ", allocated_bytes / bytes_in_mb,
                       "MB allocated, ", free_bytes / bytes_in_mb,
@@ -61,5 +63,4 @@ std::string GetTcMallocLogString() {
                       "MB.");
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

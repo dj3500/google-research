@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,12 +16,20 @@
 
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
+#include "clustering/status_macros.h"
 
 namespace research_graph {
 namespace in_memory {
 
 absl::Status InMemoryClusterer::Graph::FinishImport() {
   return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<InMemoryClusterer::Clustering>>
+InMemoryClusterer::HierarchicalCluster(const ClustererConfig& config) const {
+  InMemoryClusterer::Clustering clusters;
+  ASSIGN_OR_RETURN(clusters, Cluster(config));
+  return std::vector<Clustering>{clusters};
 }
 
 std::string InMemoryClusterer::StringId(NodeId id) const {

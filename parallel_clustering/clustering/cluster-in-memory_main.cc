@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
-
 #include "clustering/clusterers/parallel-affinity.h"
 #include "clustering/clusterers/parallel-correlation-clusterer.h"
 #include "clustering/config.pb.h"
@@ -70,9 +69,12 @@ absl::Status GbbsGraphToInMemoryClustererGraph(InMemoryClusterer::Graph* graph,
     auto vertex = gbbs_graph.get_vertex(i);
     std::vector<std::pair<int32_t, double>> outgoing_edges(
         vertex.getOutDegree());
+    std::size_t index = 0;
     auto add_outgoing_edge = [&](gbbs::uintE, const gbbs::uintE neighbor,
                                  weight_type wgh) {
-      std::make_pair(static_cast<int32_t>(neighbor), DoubleFromWeight(wgh));
+      outgoing_edges[index] =
+          std::make_pair(static_cast<int32_t>(neighbor), DoubleFromWeight(wgh));
+      index++;
     };
     vertex.mapOutNgh(i, add_outgoing_edge, false);
     InMemoryClusterer::Graph::AdjacencyList adjacency_list{

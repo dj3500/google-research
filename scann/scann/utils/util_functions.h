@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +14,13 @@
 
 
 
-#ifndef SCANN__UTILS_UTIL_FUNCTIONS_H_
-#define SCANN__UTILS_UTIL_FUNCTIONS_H_
+#ifndef SCANN_UTILS_UTIL_FUNCTIONS_H_
+#define SCANN_UTILS_UTIL_FUNCTIONS_H_
 
 #include <cmath>
+#include <cstdint>
 #include <stack>
+#include <string>
 #include <unordered_map>
 
 #include "absl/base/internal/sysinfo.h"
@@ -38,8 +40,7 @@
 #include <pmmintrin.h>
 #endif
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 using std::shared_ptr;
 
@@ -47,7 +48,7 @@ template <typename T>
 AccumulatorTypeFor<T> Sum(ConstSpan<T> terms);
 
 template <typename T>
-AccumulatorTypeFor<T> ParallelSum(ConstSpan<T> terms, thread::ThreadPool* pool);
+AccumulatorTypeFor<T> ParallelSum(ConstSpan<T> terms, ThreadPool* pool);
 
 float MaxAbsValue(ConstSpan<float> arr);
 
@@ -130,6 +131,13 @@ class DistanceComparator {
     if (a.distance() > b.distance()) return false;
     return a.docid() < b.docid();
   }
+
+  bool operator()(const NearestNeighbors::Neighbor* a,
+                  const NearestNeighbors::Neighbor* b) const {
+    DCHECK(a);
+    DCHECK(b);
+    return operator()(*a, *b);
+  }
 };
 
 class DistanceComparatorBranchOptimized {
@@ -161,28 +169,26 @@ void MergeNeighborListsWithCrowdingSwap(
 NearestNeighbors MergeNeighborListsRemoveDuplicateDocids(
     MutableSpan<NearestNeighbors> neighbor_lists, int num_neighbors);
 
-void LogCPUInfo();
-
 template <typename T>
-inline const protobuf::RepeatedField<T>& GfvValues(
+inline const google::protobuf::RepeatedField<T>& GfvValues(
     const GenericFeatureVector& gfv) {
   LOG(FATAL) << "Invalid GFV values type.";
 }
 
 template <>
-inline const protobuf::RepeatedField<int64_t>& GfvValues<int64_t>(
+inline const google::protobuf::RepeatedField<int64_t>& GfvValues<int64_t>(
     const GenericFeatureVector& gfv) {
   return gfv.feature_value_int64();
 }
 
 template <>
-inline const protobuf::RepeatedField<float>& GfvValues<float>(
+inline const google::protobuf::RepeatedField<float>& GfvValues<float>(
     const GenericFeatureVector& gfv) {
   return gfv.feature_value_float();
 }
 
 template <>
-inline const protobuf::RepeatedField<double>& GfvValues<double>(
+inline const google::protobuf::RepeatedField<double>& GfvValues<double>(
     const GenericFeatureVector& gfv) {
   return gfv.feature_value_double();
 }
@@ -426,8 +432,7 @@ void SiftFrontDown(Iterator begin, Iterator end, Comparator cmp) {
 }
 
 template <typename T>
-AccumulatorTypeFor<T> ParallelSum(ConstSpan<T> terms,
-                                  thread::ThreadPool* pool) {
+AccumulatorTypeFor<T> ParallelSum(ConstSpan<T> terms, ThreadPool* pool) {
   constexpr size_t kBlockSize = 131072;
   if (terms.size() <= kBlockSize || pool == nullptr) {
     return Sum(terms);
@@ -465,7 +470,6 @@ void UnpackNibblesDatapoint(ConstSpan<uint8_t> packed,
                             MutableSpan<uint8_t> hash,
                             DimensionIndex hash_size);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

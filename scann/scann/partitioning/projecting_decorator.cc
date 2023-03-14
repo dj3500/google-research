@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,13 @@
 
 #include "scann/partitioning/projecting_decorator.h"
 
+#include <cstdint>
+#include <vector>
+
 #include "scann/utils/datapoint_utils.h"
 #include "tensorflow/core/lib/core/errors.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename Base, typename T, typename ProjectionType>
 ProjectingDecoratorBase<Base, T, ProjectionType>::ProjectingDecoratorBase(
@@ -80,11 +82,10 @@ Status KMeansTreeProjectingDecorator<T, ProjectionType>::
 }
 
 template <typename T, typename ProjectionType>
-Status KMeansTreeProjectingDecorator<T, ProjectionType>::
-    TokensForDatapointWithSpillingBatched(
-        const TypedDataset<T>& queries, ConstSpan<int32_t> max_centers_override,
-        MutableSpan<std::vector<KMeansTreeSearchResult>> results) const {
-  if (queries.empty()) return OkStatus();
+StatusOrPtr<TypedDataset<ProjectionType>>
+KMeansTreeProjectingDecorator<T, ProjectionType>::CreateProjectedDataset(
+    const TypedDataset<T>& queries) const {
+  if (queries.empty()) return {nullptr};
   unique_ptr<TypedDataset<ProjectionType>> projected_ds;
   for (size_t i : IndicesOf(queries)) {
     TF_ASSIGN_OR_RETURN(auto projected, this->ProjectAndNormalize(queries[i]));
@@ -99,6 +100,32 @@ Status KMeansTreeProjectingDecorator<T, ProjectionType>::
     }
     SCANN_RETURN_IF_ERROR(projected_ds->Append(projected.ToPtr(), ""));
   }
+  return projected_ds;
+}
+
+template <typename T, typename ProjectionType>
+Status
+KMeansTreeProjectingDecorator<T, ProjectionType>::TokenForDatapointBatched(
+    const TypedDataset<T>& queries,
+    std::vector<KMeansTreeSearchResult>* results) const {
+  if (queries.empty()) {
+    results->clear();
+    return OkStatus();
+  }
+  TF_ASSIGN_OR_RETURN(unique_ptr<TypedDataset<ProjectionType>> projected_ds,
+                      CreateProjectedDataset(queries));
+  return base_kmeans_tree_partitioner()->TokenForDatapointBatched(*projected_ds,
+                                                                  results);
+}
+
+template <typename T, typename ProjectionType>
+Status KMeansTreeProjectingDecorator<T, ProjectionType>::
+    TokensForDatapointWithSpillingBatched(
+        const TypedDataset<T>& queries, ConstSpan<int32_t> max_centers_override,
+        MutableSpan<std::vector<KMeansTreeSearchResult>> results) const {
+  if (queries.empty()) return OkStatus();
+  TF_ASSIGN_OR_RETURN(unique_ptr<TypedDataset<ProjectionType>> projected_ds,
+                      CreateProjectedDataset(queries));
   return base_kmeans_tree_partitioner()->TokensForDatapointWithSpillingBatched(
       *projected_ds, max_centers_override, results);
 }
@@ -138,13 +165,10 @@ KMeansTreeProjectingDecorator<T, ProjectionType>::ResidualizeToFloat(
 INSTANTIATE_PROJECTING_DECORATOR(int8_t);
 INSTANTIATE_PROJECTING_DECORATOR(uint8_t);
 INSTANTIATE_PROJECTING_DECORATOR(int16_t);
-INSTANTIATE_PROJECTING_DECORATOR(uint16_t);
 INSTANTIATE_PROJECTING_DECORATOR(int32_t);
 INSTANTIATE_PROJECTING_DECORATOR(uint32_t);
 INSTANTIATE_PROJECTING_DECORATOR(int64_t);
-INSTANTIATE_PROJECTING_DECORATOR(uint64_t);
 INSTANTIATE_PROJECTING_DECORATOR(float);
 INSTANTIATE_PROJECTING_DECORATOR(double);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

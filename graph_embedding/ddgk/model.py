@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 r"""DDGK: Learning Graph Representations for Deep Divergence Graph Kernels.
 
 ===============================
@@ -92,7 +91,7 @@ def AdjMatrixLoss(logits, labels):
 
 def NodesLabels(graph, num_labels):
   # labels size is (graph_num_node, 1)
-  labels = [graph.node[n]['label'] for n in graph.nodes()]
+  labels = [graph.nodes[n]['label'] for n in graph.nodes()]
   # labels size is (graph_num_node, num_labels)
   labels = tf.one_hot(labels, num_labels, dtype=tf.float64)
   return ProbFromCounts(labels)
@@ -103,7 +102,7 @@ def NeighborNodesLabels(graph, num_labels):
 
   for v in graph.nodes():
     for u in graph.neighbors(v):
-      neighbors_labels[v, graph.node[u]['label']] += 1.0
+      neighbors_labels[v, graph.nodes[u]['label']] += 1.0
 
   return ProbFromCounts(neighbors_labels)
 

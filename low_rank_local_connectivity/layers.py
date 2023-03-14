@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,15 +23,12 @@ and are linearly combined to produce filters of size of input.
 
 from __future__ import absolute_import
 from __future__ import division
-
 from __future__ import print_function
 
+from keras.utils import conv_utils
+from keras.utils import tf_utils
 import numpy as np
 import tensorflow.compat.v1 as tf
-
-from tensorflow.python.keras.engine.input_spec import InputSpec
-from tensorflow.python.keras.utils import conv_utils
-from tensorflow.python.keras.utils import tf_utils
 
 
 class InputDependentCombiningWeights(tf.keras.Model):
@@ -543,9 +540,11 @@ class LowRankLocallyConnected2D(tf.keras.layers.LocallyConnected2D):
     self.bias = tf.math.add(self.bias_spatial, self.bias_channels, name='bias')
 
     if self.data_format == 'channels_last':
-      self.input_spec = InputSpec(ndim=4, axes={-1: input_filter})
+      self.input_spec = tf.keras.layers.InputSpec(
+          ndim=4, axes={-1: input_filter})
     else:
-      self.input_spec = InputSpec(ndim=4, axes={1: input_filter})
+      self.input_spec = tf.keras.layers.InputSpec(
+          ndim=4, axes={1: input_filter})
 
     self.built = True
 

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,6 +23,19 @@ TFE_KEY_SUFFIX_KEYPOINT_2D = ['/center/y', '/center/x']
 TFE_KEY_PREFIX_KEYPOINT_3D = 'image/object/part_3d/'
 TFE_KEY_SUFFIX_KEYPOINT_3D = ['/center/y', '/center/x', '/center/z']
 TFE_KEY_SUFFIX_KEYPOINT_SCORE = '/score'
+TFE_KEY_FEATURE = 'feature/data'
+TFE_KEY_CLASS_LABEL_ID = 'image/class/label'
+TFE_KEY_CLASS_LABEL_CONFIDENCE = 'image/class/confidence'
+
+# Input tf.SequenceExample context feature field keys.
+TFSE_KEY_IMAGE_HEIGHT = 'image/height'
+TFSE_KEY_IMAGE_WIDTH = 'image/width'
+TFSE_KEY_SUFFIX_KEYPOINT_2D = ['/region/point/y', '/region/point/x']
+TFSE_KEY_SUFFIX_KEYPOINT_2D_SCORE = '/region/point/score'
+TFSE_KEY_SUFFIX_KEYPOINT_3D = [
+    '/region/3d_point/y', '/region/3d_point/x', '/region/3d_point/z'
+]
+TFSE_KEY_SUFFIX_KEYPOINT_3D_SCORE = '/region/3d_point/score'
 
 # Input keys.
 KEY_IMAGE_SIZES = 'image_sizes'
@@ -34,6 +47,7 @@ KEY_PREPROCESSED_KEYPOINT_MASKS_2D = 'preprocessed_keypoint_masks_2d'
 KEY_OFFSET_POINTS_2D = 'offset_points_2d'
 KEY_SCALE_DISTANCES_2D = 'scale_distances_2d'
 KEY_KEYPOINTS_3D = 'keypoints_3d'
+KEY_PREPROCESSED_KEYPOINTS_3D = 'preprocessed_keypoints_3d'
 KEY_OFFSET_POINTS_3D = 'offset_points_3d'
 KEY_SCALE_DISTANCES_3D = 'scale_distances_3d'
 KEY_EMBEDDING_MEANS = 'unnormalized_embeddings'
@@ -41,6 +55,9 @@ KEY_EMBEDDING_STDDEVS = 'embedding_stddevs'
 KEY_EMBEDDING_SAMPLES = 'unnormalized_embedding_samples'
 KEY_PREDICTED_KEYPOINTS_3D = 'predicted_keypoints_3d'
 KEY_ALL_PREDICTED_KEYPOINTS_3D = 'all_predicted_keypoints_3d'
+KEY_FEATURES = 'features'
+KEY_CLASS_TARGETS = 'class_targets'
+KEY_CLASS_WEIGHTS = 'class_weights'
 
 # Model input keypoint types.
 # 2D keypoints from input tables.
@@ -61,13 +78,52 @@ SUPPORTED_INFERENCE_MODEL_INPUT_KEYPOINT_TYPES = [
     MODEL_INPUT_KEYPOINT_TYPE_2D_INPUT,
 ]
 
+# Model input keypoint mask types.
+# No use.
+MODEL_INPUT_KEYPOINT_MASK_TYPE_NO_USE = 'NO_USE'
+# Masks 2D keypoint coordinates (to 0).
+MODEL_INPUT_KEYPOINT_MASK_TYPE_MASK_KEYPOINTS = 'MASK_KEYPOINTS'
+# Concatenates with 2D keypoint coordinates as input.
+MODEL_INPUT_KEYPOINT_MASK_TYPE_AS_INPUT = 'AS_INPUT'
+# Masks and concatenates with 2D keypoint coordinates as input.
+MODEL_INPUT_KEYPOINT_MASK_TYPE_MASK_KEYPOINTS_AND_AS_INPUT = (
+    'MASK_KEYPOINTS_AND_AS_INPUT')
+# Supported model input keypoint mask types.
+SUPPORTED_MODEL_INPUT_KEYPOINT_MASK_TYPES = [
+    MODEL_INPUT_KEYPOINT_MASK_TYPE_NO_USE,
+    MODEL_INPUT_KEYPOINT_MASK_TYPE_MASK_KEYPOINTS,
+    MODEL_INPUT_KEYPOINT_MASK_TYPE_AS_INPUT,
+    MODEL_INPUT_KEYPOINT_MASK_TYPE_MASK_KEYPOINTS_AND_AS_INPUT,
+]
+
+# Base model types.
+# Simple Baseline architecutre: Martinez, et al. A simple yet effective baseline
+# for 3d human pose estimation. ICCV 2017.
+BASE_MODEL_TYPE_SIMPLE = 'SIMPLE'
+# Temporal Simple Baseline.
+BASE_MODEL_TYPE_TEMPORAL_SIMPLE = 'TEMPORAL_SIMPLE'
+# Temporal Simple Baseline late fusion.
+BASE_MODEL_TYPE_TEMPORAL_SIMPLE_LATE_FUSE = 'TEMPORAL_SIMPLE_LATE_FUSE'
+# Supported base model types.
+SUPPORTED_BASE_MODEL_TYPES = [
+    BASE_MODEL_TYPE_SIMPLE,
+    BASE_MODEL_TYPE_TEMPORAL_SIMPLE,
+    BASE_MODEL_TYPE_TEMPORAL_SIMPLE_LATE_FUSE,
+]
+
 # Embedding types.
 # Point embedding.
 EMBEDDING_TYPE_POINT = 'POINT'
-# Gaussian embedding.
+# Gaussian embedding with diagonal covariance matrix.
 EMBEDDING_TYPE_GAUSSIAN = 'GAUSSIAN'
+# Gaussian embedding with scalar variance.
+EMBEDDING_TYPE_GAUSSIAN_SCALAR_VAR = 'GAUSSIAN_SCALAR_VAR'
 # Supported embedding types.
-SUPPORTED_EMBEDDING_TYPES = [EMBEDDING_TYPE_POINT, EMBEDDING_TYPE_GAUSSIAN]
+SUPPORTED_EMBEDDING_TYPES = [
+    EMBEDDING_TYPE_POINT,
+    EMBEDDING_TYPE_GAUSSIAN,
+    EMBEDDING_TYPE_GAUSSIAN_SCALAR_VAR,
+]
 
 # Embedding distance types.
 # Distance computed using embedding centers.
@@ -100,12 +156,16 @@ SUPPORTED_DISTANCE_PAIR_TYPES = [
 DISTANCE_KERNEL_SQUARED_L2 = 'SQUARED_L2'
 # L2-based sigmoid matching probability.
 DISTANCE_KERNEL_L2_SIGMOID_MATCHING_PROB = 'L2_SIGMOID_MATCHING_PROB'
+# Squared L2-based sigmoid matching probability.
+DISTANCE_KERNEL_SQUARED_L2_SIGMOID_MATCHING_PROB = (
+    'SQUARED_L2_SIGMOID_MATCHING_PROB')
 # Expected likelihood.
 DISTANCE_KERNEL_EXPECTED_LIKELIHOOD = 'EXPECTED_LIKELIHOOD'
 # Supported distance kernels.
 SUPPORTED_DISTANCE_KERNELS = [
     DISTANCE_KERNEL_SQUARED_L2,
     DISTANCE_KERNEL_L2_SIGMOID_MATCHING_PROB,
+    DISTANCE_KERNEL_SQUARED_L2_SIGMOID_MATCHING_PROB,
     DISTANCE_KERNEL_EXPECTED_LIKELIHOOD,
 ]
 
@@ -135,6 +195,10 @@ SUPPORTED_COMPONENTWISE_DISTANCE_REDUCTIONS = [DISTANCE_REDUCTION_MEAN]
 KEYPOINT_DISTANCE_TYPE_MPJPE = 'MPJPE'
 # Supported 3D keypoint distance measurement type.
 SUPPORTED_KEYPOINT_DISTANCE_TYPES = [KEYPOINT_DISTANCE_TYPE_MPJPE]
+
+# Activation function names.
+ACTIVATION_FN_NONE = 'NONE'
+ACTIVATION_FN_RELU = 'RELU'
 
 
 def validate(value, supported_values):

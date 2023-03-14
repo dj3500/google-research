@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Tests for pruning_wrapper."""
 
 from __future__ import absolute_import
@@ -53,7 +52,7 @@ class MockLSTMCell(object):
     self._private_theta = {}
     self.vars = MockLSTMVars()
 
-  def CreateVariable(self, name, var_params, theta_fn=None, trainable=False):
+  def CreateVariable(self, name, var_params, trainable=False):
     dtype = var_params["dtype"]
     shape = var_params["shape"]
     scale = var_params["init"]["scale"]
@@ -62,8 +61,6 @@ class MockLSTMCell(object):
     with tf.variable_scope("MockLSTMCell"):
       var = tf.get_variable(name, shape, dtype, v_init, trainable=trainable)
     value = var
-    if theta_fn is not None:
-      value = theta_fn(value)
     self._private_vars[name] = var
     self._private_theta[name] = value
 
@@ -99,6 +96,9 @@ class PruningSpeechUtilsTest(tf.test.TestCase):
     self.pruning_obj = pruning.Pruning(
         self.pruning_hparams, global_step=self.global_step)
 
+    self.compression_obj = pruning_interface.get_matrix_compression_object(
+        self.pruning_hparams, global_step=self.global_step)
+
     def MockWeightParamsFn(shape, init=None, dtype=None):
       if init is None:
         init = MockWeightInit.Constant(0.0)
@@ -124,6 +124,17 @@ class PruningSpeechUtilsTest(tf.test.TestCase):
     mask_update_op = pruning_interface.get_matrix_compression_update_op(
         self.pruning_obj)
     self.assertNotEqual(mask_update_op, tf.no_op())
+
+  def testApplyCustomizedMatrixCompression(self):
+    pruning_interface.apply_customized_matrix_compression(
+        self.compression_obj,
+        self.mock_weight_params_fn,
+        MockWeightInit,
+        self.mock_lstmobj,
+        "wm",
+        self.wm_pc.shape, tf.float32)
+
+    self.assertGreater(len(tf.get_collection_ref(pruning.MASK_COLLECTION)), 0)
 
 
 if __name__ == "__main__":

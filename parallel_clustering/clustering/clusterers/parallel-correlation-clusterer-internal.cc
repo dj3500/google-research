@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 #include "clustering/clusterers/parallel-correlation-clusterer-internal.h"
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "absl/types/optional.h"
 #include "clustering/clusterers/correlation-clusterer-util.h"
 #include "clustering/config.pb.h"
+#include "clustering/in-memory-clusterer.h"
 #include "external/gbbs/gbbs/bridge.h"
 #include "external/gbbs/gbbs/gbbs.h"
 #include "external/gbbs/gbbs/macros.h"
@@ -32,7 +34,6 @@
 #include "external/gbbs/pbbslib/seq.h"
 #include "external/gbbs/pbbslib/sequence_ops.h"
 #include "external/gbbs/pbbslib/utilities.h"
-#include "clustering/in-memory-clusterer.h"
 #include "parallel/parallel-graph-utils.h"
 #include "parallel/parallel-sequence-ops.h"
 
@@ -100,7 +101,7 @@ double ClusteringHelper::ComputeObjective(
 
 std::unique_ptr<bool[]> ClusteringHelper::MoveNodesToCluster(
     const std::vector<absl::optional<ClusterId>>& moves) {
-  auto modified_cluster = absl::make_unique<bool[]>(num_nodes_);
+  auto modified_cluster = std::make_unique<bool[]>(num_nodes_);
   pbbs::parallel_for(0, num_nodes_,
                      [&](std::size_t i) { modified_cluster[i] = false; });
 
@@ -351,10 +352,13 @@ absl::StatusOr<GraphWithWeights> CompressGraph(
   auto edge_aggregation_func = [](double w1, double w2) { return w1 + w2; };
   auto is_valid_func = [](ClusteringHelper::ClusterId a,
                           ClusteringHelper::ClusterId b) { return true; };
+  auto scale_func = [](std::tuple<gbbs::uintE, gbbs::uintE, double> v) {
+    return std::get<2>(v);
+  };
 
   OffsetsEdges offsets_edges = ComputeInterClusterEdgesSort(
       original_graph, cluster_ids, num_compressed_vertices,
-      edge_aggregation_func, is_valid_func);
+      edge_aggregation_func, is_valid_func, scale_func);
   std::vector<gbbs::uintE> offsets = offsets_edges.offsets;
   std::size_t num_edges = offsets_edges.num_edges;
   std::unique_ptr<std::tuple<gbbs::uintE, float>[]> edges =

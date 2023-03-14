@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -73,7 +73,7 @@ def average_precision_clevr(pred, attributes, distance_threshold):
       predictions. The last dimension is expected to be the confidence of the
       prediction.
     attributes: Tensor of shape [batch_size, num_elements, dimension] containing
-      predictions.
+      ground-truth object properties.
     distance_threshold: Threshold to accept match. -1 indicates no threshold.
 
   Returns:

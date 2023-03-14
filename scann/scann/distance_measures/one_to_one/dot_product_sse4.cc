@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +13,13 @@
 // limitations under the License.
 
 #include "scann/distance_measures/one_to_one/dot_product_sse4.h"
+
+#include <cstdint>
 #ifdef __x86_64__
 
 #include "scann/utils/intrinsics/sse4.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace dp_internal {
 
 template <typename Byte, typename SseFuncs>
@@ -212,7 +213,7 @@ SCANN_SSE4_OUTLINE double DenseDotProductSse4(const DatapointPtr<int8_t>& a,
     }
 
     if (aptr + 4 <= aend) {
-      __m128i avals = _mm_cvtsi32_si128(*reinterpret_cast<const int*>(aptr));
+      __m128i avals = _mm_cvtsi32_si128(ABSL_INTERNAL_UNALIGNED_LOAD32(aptr));
       __m128 avals0 = _mm_cvtepi32_ps(_mm_cvtepi8_epi32(avals));
       __m128 bvals0 = _mm_loadu_ps(bptr);
       accumulator0 = _mm_add_ps(accumulator0, _mm_mul_ps(avals0, bvals0));
@@ -540,7 +541,6 @@ SCANN_SSE4_OUTLINE double DenseDotProductSse4(const DatapointPtr<int8_t>& a,
 }
 
 }  // namespace dp_internal
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

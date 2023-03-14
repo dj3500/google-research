@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """T5 CBQA preprocessors."""
 import tensorflow.compat.v1 as tf
 
@@ -213,3 +212,47 @@ def sample_answer(
         'answers': answers,
     }
   return dataset.map(samp_map, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+
+def mask_salient_spans(
+    dataset,
+    prefix='nem',
+    mask='_X_'):
+  """Mask each salient span in the provided dataset.
+
+  The function takes sentences with indices of salient spanss and for each span,
+  outputs an example with it masked.
+
+  Args:
+    dataset: a tf.data.Dataset to process.
+    prefix: str, prefix to prepend to the inputs.
+    mask: str, the value to put in place of a salient span in the inputs.
+
+  Returns:
+    a tf.data.Dataset
+  """
+  def tile_sentence(ex):
+    return {
+        'sentence': tf.tile([ex['text']], tf.shape(ex['spans']['start'])),
+        'span_start': tf.cast(ex['spans']['start'], tf.int32),
+        'span_limit': tf.cast(ex['spans']['limit'], tf.int32),
+    }
+
+  def ssm_map(ex):
+    return {
+        'inputs':
+            tf.strings.join([
+                prefix, ': ',
+                tf.strings.substr(ex['sentence'], 0, ex['span_start']),
+                mask,
+                tf.strings.substr(ex['sentence'], ex['span_limit'], -1)
+            ]),
+        'targets':
+            tf.strings.substr(
+                ex['sentence'], ex['span_start'],
+                ex['span_limit'] - ex['span_start'])
+    }
+  dataset = dataset.filter(lambda ex: tf.size(ex['spans']['start']) > 0)
+  dataset = dataset.map(
+      tile_sentence, num_parallel_calls=tf.data.experimental.AUTOTUNE).unbatch()
+  return dataset.map(ssm_map, num_parallel_calls=tf.data.experimental.AUTOTUNE)

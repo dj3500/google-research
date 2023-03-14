@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,13 @@
 
 
 
-#ifndef SCANN__BASE_SINGLE_MACHINE_BASE_H_
-#define SCANN__BASE_SINGLE_MACHINE_BASE_H_
+#ifndef SCANN_BASE_SINGLE_MACHINE_BASE_H_
+#define SCANN_BASE_SINGLE_MACHINE_BASE_H_
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <vector>
 
 #include "scann/base/search_parameters.h"
 #include "scann/base/single_machine_factory_options.h"
@@ -32,11 +37,17 @@
 #include "scann/utils/util_functions.h"
 #include "tensorflow/core/lib/core/errors.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
+
+class UntypedSingleMachineSearcherBase;
+using StatusOrSearcherUntyped =
+    StatusOr<unique_ptr<UntypedSingleMachineSearcherBase>>;
 
 template <typename T>
 class SingleMachineSearcherBase;
+
+template <typename T>
+class BruteForceSearcher;
 
 class UntypedSingleMachineSearcherBase {
  public:
@@ -44,20 +55,12 @@ class UntypedSingleMachineSearcherBase {
 
   virtual ~UntypedSingleMachineSearcherBase();
 
-  virtual tensorflow::scann_ops::TypeTag TypeTag() const = 0;
+  virtual research_scann::TypeTag TypeTag() const = 0;
 
   virtual const Dataset* dataset() const = 0;
 
   const DenseDataset<uint8_t>* hashed_dataset() const {
     return hashed_dataset_.get();
-  }
-
-  shared_ptr<const DenseDataset<uint8_t>> shared_hashed_dataset() const {
-    return hashed_dataset_;
-  }
-
-  const DenseDataset<uint8_t>* compressed_dataset() const {
-    return compressed_dataset_.get();
   }
 
   StatusOr<string_view> GetDocid(DatapointIndex i) const;
@@ -111,7 +114,9 @@ class UntypedSingleMachineSearcherBase {
   Status EnableCrowding(
       shared_ptr<std::vector<int64_t>> datapoint_index_to_crowding_attribute);
 
-  bool crowding_enabled() const { return crowding_enabled_; }
+  bool crowding_enabled() const {
+    return datapoint_index_to_crowding_attribute_ != nullptr;
+  }
 
   virtual bool supports_crowding() const { return false; }
 
@@ -126,7 +131,6 @@ class UntypedSingleMachineSearcherBase {
   void DisableCrowding() {
     DisableCrowdingImpl();
     datapoint_index_to_crowding_attribute_ = nullptr;
-    crowding_enabled_ = false;
   }
 
   StatusOr<DatapointIndex> DatasetSize() const;
@@ -137,50 +141,12 @@ class UntypedSingleMachineSearcherBase {
 
   virtual bool reordering_enabled() const = 0;
 
+  virtual bool exact_reordering_enabled() const = 0;
+  virtual bool fixed_point_reordering_enabled() const = 0;
+
   virtual DatapointIndex optimal_batch_size() const;
 
-  class MutationMetadata : public VirtualDestructor {};
-
-  class UntypedMutator {
-   public:
-    virtual ~UntypedMutator() {}
-
-    virtual Status RemoveDatapoint(string_view docid) = 0;
-
-    virtual bool LookupDatapointIndex(string_view docid,
-                                      DatapointIndex* index) const = 0;
-
-    virtual void Reserve(size_t size) = 0;
-
-    virtual Status RemoveDatapoint(DatapointIndex index) = 0;
-
-    virtual Status RemoveDatapointWithMetadata(DatapointIndex idx) = 0;
-
-    using DatapointIndexRenameFn =
-        std::function<void(DatapointIndex old_idx, DatapointIndex new_idx)>;
-    void AddOnDatapointIndexRenameFn(DatapointIndexRenameFn fn) {
-      on_datapoint_index_rename_fns_.push_back(fn);
-    }
-
-   protected:
-    void OnDatapointIndexRename(DatapointIndex old_idx,
-                                DatapointIndex new_idx) const {
-      for (auto& fn : on_datapoint_index_rename_fns_) {
-        fn(old_idx, new_idx);
-      }
-    }
-
-    virtual StatusOr<DatapointIndex> RemoveDatapointFromBase(
-        DatapointIndex index) = 0;
-
-    virtual void ReserveInBase(DatapointIndex num_datapoints) = 0;
-
-   private:
-    vector<DatapointIndexRenameFn> on_datapoint_index_rename_fns_;
-  };
-
-  virtual StatusOr<typename UntypedSingleMachineSearcherBase::UntypedMutator*>
-  GetUntypedMutator() const = 0;
+  class PrecomputedMutationArtifacts : public VirtualDestructor {};
 
   virtual StatusOr<SingleMachineFactoryOptions>
   ExtractSingleMachineFactoryOptions() = 0;
@@ -207,8 +173,6 @@ class UntypedSingleMachineSearcherBase {
 
   shared_ptr<const DenseDataset<uint8_t>> hashed_dataset_ = nullptr;
 
-  shared_ptr<const DenseDataset<uint8_t>> compressed_dataset_ = nullptr;
-
   shared_ptr<const DocidCollectionInterface> docids_;
 
   shared_ptr<UntypedMetadataGetter> metadata_getter_;
@@ -218,8 +182,6 @@ class UntypedSingleMachineSearcherBase {
   shared_ptr<std::vector<int64_t>> datapoint_index_to_crowding_attribute_ = {};
 
   int64_t creation_timestamp_ = numeric_limits<int64_t>::min();
-
-  bool crowding_enabled_ = false;
 
   bool mutator_outstanding_ = false;
 
@@ -289,11 +251,14 @@ class SingleMachineSearcherBase : public UntypedSingleMachineSearcherBase {
       const TypedDataset<T>& queries, ConstSpan<SearchParameters> params,
       MutableSpan<NNResultsVector> results) const;
 
-  virtual StatusOr<
-      unique_ptr<SearchParameters::UnlockedQueryPreprocessingResults>>
-  UnlockedPreprocessQuery(const DatapointPtr<T>& query) const {
-    return {nullptr};
+  virtual Status PreprocessQueryIntoParamsUnlocked(
+      const DatapointPtr<T>& query, SearchParameters& search_params) const {
+    search_params.set_unlocked_query_preprocessing_results(nullptr);
+    return OkStatus();
   }
+
+  virtual StatusOr<shared_ptr<const DenseDataset<float>>>
+  SharedFloatDatasetIfNeeded();
 
   Status GetNeighborProto(const pair<DatapointIndex, float> neighbor,
                           const DatapointPtr<T>& query,
@@ -303,9 +268,7 @@ class SingleMachineSearcherBase : public UntypedSingleMachineSearcherBase {
                                     const DatapointPtr<T>& query,
                                     NearestNeighbors::Neighbor* result) const;
 
-  tensorflow::scann_ops::TypeTag TypeTag() const final {
-    return TagForType<T>();
-  }
+  research_scann::TypeTag TypeTag() const final { return TagForType<T>(); }
 
   const TypedDataset<T>* dataset() const final { return dataset_.get(); }
 
@@ -348,124 +311,15 @@ class SingleMachineSearcherBase : public UntypedSingleMachineSearcherBase {
 
   void DisableExactReordering() { DisableReordering(); }
 
-  bool exact_reordering_enabled() const {
+  bool exact_reordering_enabled() const final {
     return (reordering_helper_ &&
             reordering_helper_->name() == "ExactReordering");
   }
 
-  bool fixed_point_reordering_enabled() const;
-
-  void set_compressed_dataset(
-      shared_ptr<DenseDataset<uint8_t>> compressed_dataset) {
-    compressed_dataset_ = std::move(compressed_dataset);
-    docids_ = compressed_dataset_->docids();
-  }
-
-  bool compressed_reordering_enabled() const {
-    return (reordering_helper_ &&
-            reordering_helper_->name() == "CompressedReordering");
-  }
+  bool fixed_point_reordering_enabled() const final;
 
   const ReorderingInterface<T>& reordering_helper() const {
     return *reordering_helper_;
-  }
-
-  class Mutator : public UntypedSingleMachineSearcherBase::UntypedMutator {
-   public:
-    virtual unique_ptr<MutationMetadata> ComputeMutationMetadata(
-        const DatapointPtr<T>& dptr) const {
-      return nullptr;
-    }
-
-    virtual vector<unique_ptr<MutationMetadata>> ComputeMutationMetadata(
-        const TypedDataset<T>& batch) const {
-      vector<unique_ptr<MutationMetadata>> result(batch.size());
-      for (size_t i : IndicesOf(batch)) {
-        result[i] = ComputeMutationMetadata(batch[i]);
-      }
-      return result;
-    }
-
-    virtual StatusOr<DatapointIndex> AddDatapoint(const DatapointPtr<T>& dptr,
-                                                  string_view docid,
-                                                  MutationMetadata* md) = 0;
-
-    virtual StatusOr<DatapointIndex> UpdateDatapoint(
-        const DatapointPtr<T>& dptr, string_view docid,
-        MutationMetadata* md) = 0;
-    virtual StatusOr<DatapointIndex> UpdateDatapoint(
-        const DatapointPtr<T>& dptr, DatapointIndex index,
-        MutationMetadata* md) = 0;
-
-    bool LookupDatapointIndex(string_view docid,
-                              DatapointIndex* index) const override;
-
-    StatusOr<DatapointIndex> AddDatapointWithMetadata(
-        const DatapointPtr<T>& dptr, const GenericFeatureVector& gfv,
-        MutationMetadata* md = nullptr);
-    StatusOr<DatapointIndex> UpdateDatapointWithMetadata(
-        const DatapointPtr<T>& dptr, const GenericFeatureVector& gfv,
-        DatapointIndex idx, MutationMetadata* md = nullptr);
-
-    Status RemoveDatapointWithMetadata(DatapointIndex idx) final;
-
-    StatusOr<DatapointIndex> AddDatapoint(const DatapointPtr<T>& dptr,
-                                          string_view docid) {
-      return AddDatapoint(dptr, docid, nullptr);
-    }
-    StatusOr<DatapointIndex> UpdateDatapoint(const DatapointPtr<T>& dptr,
-                                             string_view docid) {
-      return UpdateDatapoint(dptr, docid, nullptr);
-    }
-    StatusOr<DatapointIndex> UpdateDatapoint(const DatapointPtr<T>& dptr,
-                                             DatapointIndex index) {
-      return UpdateDatapoint(dptr, index, nullptr);
-    }
-
-    Status PrepareForBaseMutation(SingleMachineSearcherBase<T>* searcher);
-
-   protected:
-    StatusOr<DatapointIndex> AddDatapointToBase(
-        const DatapointPtr<T>& dptr, const DatapointPtr<uint8_t>& hashed,
-        string_view docid);
-    Status UpdateDatapointInBase(const DatapointPtr<T>& dptr,
-                                 const DatapointPtr<uint8_t>& hashed,
-                                 DatapointIndex idx);
-
-    StatusOr<DatapointIndex> AddDatapointToBase(const DatapointPtr<T>& dptr,
-                                                string_view docid) {
-      return AddDatapointToBase(dptr, {}, docid);
-    }
-    Status UpdateDatapointInBase(const DatapointPtr<T>& dptr,
-                                 DatapointIndex idx) {
-      return UpdateDatapointInBase(dptr, {}, idx);
-    }
-
-    StatusOr<DatapointIndex> RemoveDatapointFromBase(DatapointIndex idx) final;
-    void ReserveInBase(DatapointIndex num_datapoints) final;
-
-   private:
-    StatusOr<DatapointIndex> GetNextDatapointIndex() const;
-
-    SingleMachineSearcherBase<T>* searcher_ = nullptr;
-
-    typename TypedDataset<T>::Mutator* dataset_mutator_ = nullptr;
-
-    typename TypedDataset<uint8_t>::Mutator* hashed_dataset_mutator_ = nullptr;
-
-    DocidCollectionInterface::Mutator* docid_mutator_ = nullptr;
-
-    typename ReorderingInterface<T>::Mutator* reordering_mutator_ = nullptr;
-  };
-
-  virtual StatusOr<typename SingleMachineSearcherBase::Mutator*> GetMutator()
-      const {
-    return FailedPreconditionError("Cannot be dynamically updated.");
-  }
-  StatusOr<typename UntypedSingleMachineSearcherBase::UntypedMutator*>
-  GetUntypedMutator() const final {
-    TF_ASSIGN_OR_RETURN(auto mutator, GetMutator());
-    return mutator;
   }
 
  protected:
@@ -504,7 +358,6 @@ class SingleMachineSearcherBase : public UntypedSingleMachineSearcherBase {
 
 SCANN_INSTANTIATE_TYPED_CLASS(extern, SingleMachineSearcherBase);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

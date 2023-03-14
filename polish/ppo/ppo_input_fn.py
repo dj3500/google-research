@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,9 +20,6 @@ multiple training steps. This input_fn is a subclass of tf.train.SessionRunHook
 that enables us to extend calls to MonitoredSession.run() with
 user-defined functions.
 """
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 import collections
 import functools
 import os
@@ -30,6 +27,7 @@ from absl import logging
 import gin
 import numpy as np
 import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 from polish.utils import math_utils
 from polish.utils import tf_utils
 
@@ -437,7 +435,7 @@ class PpoInputFn(tf.train.SessionRunHook):
       self._model_fn(
           features=features,
           labels=None,
-          mode=tf.estimator.ModeKeys.PREDICT,
+          mode=tf_estimator.ModeKeys.PREDICT,
           params=None)
       sess.run(tf.global_variables_initializer())
       tf.train.Saver().save(sess, save_file)
@@ -464,4 +462,4 @@ class PpoInputFn(tf.train.SessionRunHook):
         'policy_features':
             tf.placeholder(tf.float32, shape=[None, self._env_state_space]),
     }
-    return tf.estimator.export.ServingInputReceiver(features, features)
+    return tf_estimator.export.ServingInputReceiver(features, features)

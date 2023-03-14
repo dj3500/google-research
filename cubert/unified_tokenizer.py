@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,18 +13,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Cross-language tokenization library."""
-
+import dataclasses
 import enum
 import token as python_token
 import tokenize
-from typing import List, Mapping, Optional, Sequence, Text, Tuple
+from typing import Iterable
+from typing import List
+from typing import Mapping
+from typing import Optional
+from typing import Sequence
+from typing import Text
+from typing import Tuple
 
 from absl import logging
-import dataclasses
 import regex  # Using instead of `re` because it handles Unicode classes.
 import six
+
+
+# Quote string for special tokens.
+SPECIAL_QUOTE = '___'
+
+
+def quote_special(content):
+  return '{q}{t}{q}'.format(q=SPECIAL_QUOTE, t=content)
+
 
 # Log level of pedantic messages.
 _PEDANTIC = 5
@@ -50,10 +63,16 @@ class TokenKind(enum.Enum):
   WHITESPACE = 10
 
 
+NEWLINE = quote_special(TokenKind.NEWLINE.name)
+
+
 @dataclasses.dataclass(frozen=True)
 class Position():
   line: int
   column: int
+
+  def __lt__(self, other):
+    return (self.line, self.column) < (other.line, other.column)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -93,11 +112,76 @@ def multi_token_from_token(token):
                             metadata=token.metadata)
 
 
-_KINDS_TO_SPLIT_LIKE_WHITESPACE = (TokenKind.COMMENT, TokenKind.STRING,
-                                   TokenKind.WHITESPACE)
-_KINDS_TO_SPLIT_BY_LENGTH = (TokenKind.COMMENT, TokenKind.STRING,
-                             TokenKind.NUMBER, TokenKind.IDENTIFIER,
-                             TokenKind.WHITESPACE)
+# TODO(maniatis): Add a test for this one, and migrate other copies to use
+# the same implementation.
+def fill_range_with_whitespace(start,
+                               end):
+  """Yields primitive whitespace/newline tokens to fill a text range.
+
+  We translate multi-line whitespace into single-line whitespace and newlines,
+  in a *destructive* canonical fashion. Only space preceding a non-whitespace
+  token is preserved. Lines with only whitespace are replaced by a single
+  newline token.
+
+  Args:
+    start: The beginning of the range.
+    end: The end (exclusive) of the range.
+
+  Yields:
+    WHITESPACE and NEWLINE abstract tokens.
+
+  Raises:
+    ValueError: if `start` does not precede `end`.
+  """
+  current_line = start.line
+  current_column = start.column
+  end_column = end.column
+  end_line = end.line
+  if (current_line, current_column) >= (end_line, end_column):
+    raise ValueError('`start` must precede `end`, but we received start %s '
+                     'and end %s.' % (start, end))
+
+  while current_line < end_line:
+    next_line = current_line + 1
+    yield AbstractToken(
+        NEWLINE,
+        TokenKind.NEWLINE,
+        TokenMetadata(
+            # A NEWLINE starts at the colum where it occurs and ends
+            # at the first character of the next line.
+            start=Position(line=current_line, column=current_column),
+            end=Position(line=next_line, column=0)))
+    current_column = 0
+    current_line = next_line
+
+  # At this point, we have consumed all newlines. Add any remaining
+  # space until the next, non-whitespace token.
+  number_of_final_spaces = end_column - current_column
+  if number_of_final_spaces:
+    # Note that we canonicalize all column differences as space characters.
+    # This, for example, will discard any '\t' characters and replace them
+    # with ' '.
+    yield AbstractToken(
+        ' ' * number_of_final_spaces, TokenKind.WHITESPACE,
+        TokenMetadata(
+            start=Position(line=current_line, column=current_column),
+            end=Position(line=current_line, column=end_column)))
+
+
+_KINDS_TO_SPLIT_LIKE_WHITESPACE = (
+    TokenKind.COMMENT,
+    TokenKind.STRING,
+    TokenKind.WHITESPACE,
+    TokenKind.ERROR,
+)
+_KINDS_TO_SPLIT_BY_LENGTH = (
+    TokenKind.COMMENT,
+    TokenKind.STRING,
+    TokenKind.NUMBER,
+    TokenKind.IDENTIFIER,
+    TokenKind.WHITESPACE,
+    TokenKind.ERROR,
+)
 
 _UPPERCASE = r'\p{Lu}'
 _TITLECASE = r'\p{Lt}'

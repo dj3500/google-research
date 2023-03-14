@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
 
 #include "scann/distance_measures/one_to_one/jaccard_distance.h"
 
-#include "scann/oss_wrappers/scann_bits.h"
+#include <cstdint>
 
-namespace tensorflow {
-namespace scann_ops {
+#include "absl/numeric/bits.h"
+
+namespace research_scann {
 
 SCANN_DEFINE_DISTANCE_MEASURE_VIRTUAL_METHODS(GeneralJaccardDistance,
                                               kEarlyStoppingNotSupported);
@@ -33,31 +34,31 @@ double BinaryJaccardDistance::GetDistanceDense(
   for (; i + 8 <= a.nonzero_entries(); i += 8) {
     const uint64_t aval = ABSL_INTERNAL_UNALIGNED_LOAD64(a.values() + i);
     const uint64_t bval = ABSL_INTERNAL_UNALIGNED_LOAD64(b.values() + i);
-    xor_sum += bits::CountOnes64(aval ^ bval);
-    or_sum += bits::CountOnes64(aval | bval);
+    xor_sum += absl::popcount(aval ^ bval);
+    or_sum += absl::popcount(aval | bval);
   }
 
   if (i + 4 <= a.nonzero_entries()) {
     const uint32_t aval = ABSL_INTERNAL_UNALIGNED_LOAD32(a.values() + i);
     const uint32_t bval = ABSL_INTERNAL_UNALIGNED_LOAD32(b.values() + i);
-    xor_sum += bits::CountOnes64(aval ^ bval);
-    or_sum += bits::CountOnes64(aval | bval);
+    xor_sum += absl::popcount(aval ^ bval);
+    or_sum += absl::popcount(aval | bval);
     i += 4;
   }
 
   if (i + 2 <= a.nonzero_entries()) {
     const uint32_t aval = ABSL_INTERNAL_UNALIGNED_LOAD16(a.values() + i);
     const uint32_t bval = ABSL_INTERNAL_UNALIGNED_LOAD16(b.values() + i);
-    xor_sum += bits::CountOnes64(aval ^ bval);
-    or_sum += bits::CountOnes64(aval | bval);
+    xor_sum += absl::popcount(aval ^ bval);
+    or_sum += absl::popcount(aval | bval);
     i += 2;
   }
 
   if (i < a.nonzero_entries()) {
     const uint32_t aval = a.values()[i];
     const uint32_t bval = b.values()[i];
-    xor_sum += bits::CountOnes64(aval ^ bval);
-    or_sum += bits::CountOnes64(aval | bval);
+    xor_sum += absl::popcount(aval ^ bval);
+    or_sum += absl::popcount(aval | bval);
   }
 
   return (ABSL_PREDICT_FALSE(or_sum == 0))
@@ -107,5 +108,4 @@ double BinaryJaccardDistance::GetDistanceSparse(
 
 SCANN_REGISTER_DISTANCE_MEASURE(BinaryJaccardDistance)
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

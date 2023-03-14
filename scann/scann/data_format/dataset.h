@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +14,12 @@
 
 
 
-#ifndef SCANN__DATA_FORMAT_DATASET_H_
-#define SCANN__DATA_FORMAT_DATASET_H_
+#ifndef SCANN_DATA_FORMAT_DATASET_H_
+#define SCANN_DATA_FORMAT_DATASET_H_
 
 #include <memory>
 #include <type_traits>
+#include <utility>
 
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
@@ -34,8 +35,7 @@
 #include "scann/utils/util_functions.h"
 #include "tensorflow/core/platform/prefetch.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 class TypedDataset;
@@ -67,6 +67,8 @@ class Dataset : public VirtualDestructor {
 
   bool IsSparse() const { return !IsDense(); }
 
+  virtual void set_dimensionality(DimensionIndex dimensionality) = 0;
+
   virtual void Reserve(size_t n_points) {}
 
   void ReserveDocids(size_t n_docids) { docids_->Reserve(n_docids); }
@@ -79,7 +81,7 @@ class Dataset : public VirtualDestructor {
 
   virtual void clear() = 0;
 
-  virtual tensorflow::scann_ops::TypeTag TypeTag() const = 0;
+  virtual research_scann::TypeTag TypeTag() const = 0;
 
   virtual void GetDatapoint(size_t index, Datapoint<double>* result) const = 0;
 
@@ -138,6 +140,9 @@ class Dataset : public VirtualDestructor {
 
   size_t DocidMemoryUsage() const { return docids_->MemoryUsage(); }
 
+  class Mutator;
+  virtual StatusOr<typename Dataset::Mutator*> GetUntypedMutator() const = 0;
+
  protected:
   void set_dimensionality_no_checks(DimensionIndex dim) {
     dimensionality_ = dim;
@@ -163,6 +168,18 @@ class Dataset : public VirtualDestructor {
   virtual void UnusedKeyMethod();
 };
 
+class Dataset::Mutator : public VirtualDestructor {
+ public:
+  virtual Status RemoveDatapoint(string_view docid) = 0;
+
+  virtual bool LookupDatapointIndex(string_view docid,
+                                    DatapointIndex* index) const = 0;
+
+  virtual void Reserve(size_t size) = 0;
+
+  virtual Status RemoveDatapoint(DatapointIndex index) = 0;
+};
+
 template <typename T>
 class TypedDataset : public Dataset {
  public:
@@ -173,9 +190,7 @@ class TypedDataset : public Dataset {
   explicit TypedDataset(unique_ptr<DocidCollectionInterface> docids)
       : Dataset(std::move(docids)) {}
 
-  tensorflow::scann_ops::TypeTag TypeTag() const final {
-    return TagForType<T>();
-  }
+  research_scann::TypeTag TypeTag() const final { return TagForType<T>(); }
 
   bool is_float() const final { return std::is_floating_point<T>::value; }
 
@@ -189,8 +204,6 @@ class TypedDataset : public Dataset {
     CHECK_LT(datapoint_index, size());
     return operator[](datapoint_index);
   }
-
-  virtual void set_dimensionality(DimensionIndex dimensionality) = 0;
 
   virtual Status Append(const DatapointPtr<T>& dptr, string_view docid) = 0;
   Status Append(const DatapointPtr<T>& dptr);
@@ -217,10 +230,14 @@ class TypedDataset : public Dataset {
 
   class Mutator;
   virtual StatusOr<typename TypedDataset::Mutator*> GetMutator() const = 0;
+  StatusOr<typename Dataset::Mutator*> GetUntypedMutator() const override {
+    TF_ASSIGN_OR_RETURN(Dataset::Mutator * result, GetMutator());
+    return result;
+  }
 };
 
 template <typename T>
-class TypedDataset<T>::Mutator : public VirtualDestructor {
+class TypedDataset<T>::Mutator : public Dataset::Mutator {
  public:
   virtual Status AddDatapoint(const DatapointPtr<T>& dptr,
                               string_view docid) = 0;
@@ -258,6 +275,8 @@ class DenseDataset final : public TypedDataset<T> {
   DenseDataset<T> Copy() const {
     auto result = DenseDataset<T>(data_, this->docids()->Copy());
     result.set_normalization_tag(this->normalization());
+
+    result.set_dimensionality(this->dimensionality());
     return result;
   }
 
@@ -287,6 +306,12 @@ class DenseDataset final : public TypedDataset<T> {
   MutableSpan<T> mutable_data() { return MakeMutableSpan(data_); }
   MutableSpan<T> mutable_data(size_t index) {
     return MakeMutableSpan(data_.data() + index * stride_, stride_);
+  }
+
+  vector<T> ClearRecyclingDataVector() {
+    vector<T> result = std::move(data_);
+    this->clear();
+    return result;
   }
 
   void clear() final;
@@ -343,9 +368,13 @@ class DenseDatasetView : VirtualDestructor {
 
   virtual size_t size() const = 0;
 
+  virtual research_scann::TypeTag TypeTag() const { return TagForType<T>(); }
+
+  virtual bool IsConsecutiveStorage() const { return false; }
+
   virtual std::unique_ptr<DenseDatasetView<T>> subview(size_t offset,
                                                        size_t size) const {
-    return absl::make_unique<DenseDatasetSubView<T>>(this, offset, size);
+    return std::make_unique<DenseDatasetSubView<T>>(this, offset, size);
   }
 };
 
@@ -384,6 +413,8 @@ class DefaultDenseDatasetView : public DenseDatasetView<T> {
         new DefaultDenseDatasetView<T>(ptr_ + offset * dims_, dims_, size));
   }
 
+  bool IsConsecutiveStorage() const override { return true; }
+
  private:
   DefaultDenseDatasetView(const T* ptr, size_t dim, size_t size)
       : ptr_(ptr), dims_(dim), size_(size) {}
@@ -412,8 +443,12 @@ class DenseDatasetSubView : public DenseDatasetView<T> {
 
   std::unique_ptr<DenseDatasetView<T>> subview(size_t offset,
                                                size_t size) const final {
-    return absl::make_unique<DenseDatasetSubView<T>>(parent_view_,
-                                                     offset + offset_, size);
+    return std::make_unique<DenseDatasetSubView<T>>(parent_view_,
+                                                    offset + offset_, size);
+  }
+
+  bool IsConsecutiveStorage() const override {
+    return parent_view_->IsConsecutiveStorage();
   }
 
  private:
@@ -546,7 +581,6 @@ SCANN_INSTANTIATE_TYPED_CLASS(extern, TypedDataset);
 SCANN_INSTANTIATE_TYPED_CLASS(extern, SparseDataset);
 SCANN_INSTANTIATE_TYPED_CLASS(extern, DenseDataset);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

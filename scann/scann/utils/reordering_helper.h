@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +13,14 @@
 // limitations under the License.
 
 
-#ifndef SCANN__UTILS_REORDERING_HELPER_H_
-#define SCANN__UTILS_REORDERING_HELPER_H_
+#ifndef SCANN_UTILS_REORDERING_HELPER_H_
+#define SCANN_UTILS_REORDERING_HELPER_H_
 
+#include <cstdint>
 #include <limits>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "scann/base/single_machine_factory_options.h"
 #include "scann/data_format/datapoint.h"
@@ -29,8 +33,7 @@
 #include "scann/utils/types.h"
 #include "scann/utils/util_functions.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 class ReorderingInterface {
@@ -124,68 +127,6 @@ class ExactReorderingHelper : public ReorderingHelper<T> {
   shared_ptr<const TypedDataset<T>> exact_reordering_dataset_ = nullptr;
 };
 
-template <typename T>
-class CompressedReorderingHelper final : public ReorderingHelper<T> {
- public:
-  CompressedReorderingHelper(
-      unique_ptr<const asymmetric_hashing2::AsymmetricQueryer<T>>
-          compressed_queryer,
-      shared_ptr<const DenseDataset<uint8_t>> compressed_dataset,
-      AsymmetricHasherConfig::LookupType lookup_type)
-      : compressed_queryer_(std::move(compressed_queryer)),
-        compressed_dataset_(std::move(compressed_dataset)) {}
-
-  std::string name() const final { return "CompressedReordering"; }
-
-  bool needs_dataset() const final { return false; }
-
-  Status ComputeDistancesForReordering(const DatapointPtr<T>& query,
-                                       NNResultsVector* result) const final;
-
-  StatusOr<std::pair<DatapointIndex, float>> ComputeTop1ReorderingDistance(
-      const DatapointPtr<T>& query, NNResultsVector* result) const final;
-
- private:
-  unique_ptr<const asymmetric_hashing2::AsymmetricQueryer<T>>
-      compressed_queryer_ = nullptr;
-
-  shared_ptr<const DenseDataset<uint8_t>> compressed_dataset_ = nullptr;
-
-  AsymmetricHasherConfig::LookupType lookup_type_ =
-      AsymmetricHasherConfig::FLOAT;
-};
-
-template <typename T>
-class CompressedResidualReorderingHelper final : public ReorderingHelper<T> {
- public:
-  CompressedResidualReorderingHelper(
-      unique_ptr<const asymmetric_hashing2::AsymmetricQueryer<T>>
-          compressed_queryer,
-      shared_ptr<const DenseDataset<uint8_t>> compressed_dataset,
-      AsymmetricHasherConfig::LookupType lookup_type)
-      : compressed_queryer_(std::move(compressed_queryer)),
-        compressed_dataset_(std::move(compressed_dataset)) {}
-
-  std::string name() const final { return "CompressedResidualReordering"; }
-
-  bool needs_dataset() const final { return false; }
-
-  Status ComputeDistancesForReordering(const DatapointPtr<T>& query,
-                                       NNResultsVector* result) const final;
-
-  StatusOr<std::pair<DatapointIndex, float>> ComputeTop1ReorderingDistance(
-      const DatapointPtr<T>& query, NNResultsVector* result) const final;
-
- private:
-  unique_ptr<const asymmetric_hashing2::AsymmetricQueryer<T>>
-      compressed_queryer_ = nullptr;
-
-  shared_ptr<const DenseDataset<uint8_t>> compressed_dataset_ = nullptr;
-
-  AsymmetricHasherConfig::LookupType lookup_type_ =
-      AsymmetricHasherConfig::FLOAT;
-};
-
 class FixedPointFloatDenseDotProductReorderingHelper
     : public ReorderingHelper<float> {
  public:
@@ -193,9 +134,9 @@ class FixedPointFloatDenseDotProductReorderingHelper
       const DenseDataset<float>& exact_reordering_dataset,
       float fixed_point_multiplier_quantile = 1.0f);
 
-  FixedPointFloatDenseDotProductReorderingHelper(
-      DenseDataset<int8_t> fixed_point_dataset,
-      const shared_ptr<const std::vector<float>>& multiplier_by_dimension);
+  explicit FixedPointFloatDenseDotProductReorderingHelper(
+      shared_ptr<DenseDataset<int8_t>> fixed_point_dataset,
+      const std::vector<float>& multiplier_by_dimension);
 
   ~FixedPointFloatDenseDotProductReorderingHelper() override;
 
@@ -217,7 +158,7 @@ class FixedPointFloatDenseDotProductReorderingHelper
       const DatapointPtr<float>& query, NNResultsVector* result) const override;
 
   DimensionIndex dimensionality() const {
-    return fixed_point_dataset_.dimensionality();
+    return fixed_point_dataset_->dimensionality();
   }
 
   Status Reconstruct(DatapointIndex i, MutableSpan<float> output) const;
@@ -226,11 +167,11 @@ class FixedPointFloatDenseDotProductReorderingHelper
       SingleMachineFactoryOptions* opts) const override {
     opts->pre_quantized_fixed_point =
         make_shared<PreQuantizedFixedPoint>(CreatePreQuantizedFixedPoint(
-            fixed_point_dataset_, inverse_multipliers_, {}, true));
+            *fixed_point_dataset_, inverse_multipliers_, {}, true));
   }
 
  private:
-  DenseDataset<int8_t> fixed_point_dataset_;
+  shared_ptr<DenseDataset<int8_t>> fixed_point_dataset_;
   std::vector<float> inverse_multipliers_;
 
   friend class FixedPointFloatDenseSquaredL2ReorderingHelper;
@@ -243,9 +184,9 @@ class FixedPointFloatDenseCosineReorderingHelper
       const DenseDataset<float>& exact_reordering_dataset,
       float fixed_point_multiplier_quantile = 1.0f);
 
-  FixedPointFloatDenseCosineReorderingHelper(
-      DenseDataset<int8_t> fixed_point_dataset,
-      shared_ptr<const std::vector<float>> multiplier_by_dimension);
+  explicit FixedPointFloatDenseCosineReorderingHelper(
+      shared_ptr<DenseDataset<int8_t>> fixed_point_dataset,
+      const std::vector<float>& multiplier_by_dimension);
 
   ~FixedPointFloatDenseCosineReorderingHelper() override;
 
@@ -278,8 +219,8 @@ class FixedPointFloatDenseSquaredL2ReorderingHelper
       float fixed_point_multiplier_quantile = 1.0f);
 
   FixedPointFloatDenseSquaredL2ReorderingHelper(
-      DenseDataset<int8_t> fixed_point_dataset,
-      shared_ptr<const std::vector<float>> multiplier_by_dimension,
+      shared_ptr<DenseDataset<int8_t>> fixed_point_dataset,
+      const std::vector<float>& multiplier_by_dimension,
       shared_ptr<const std::vector<float>> squared_l2_norm_by_datapoint);
 
   std::string name() const override {
@@ -342,10 +283,7 @@ class FixedPointFloatDenseLimitedInnerReorderingHelper
 };
 
 SCANN_INSTANTIATE_TYPED_CLASS(extern, ExactReorderingHelper);
-SCANN_INSTANTIATE_TYPED_CLASS(extern, CompressedReorderingHelper);
-SCANN_INSTANTIATE_TYPED_CLASS(extern, CompressedResidualReorderingHelper);
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

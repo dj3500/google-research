@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,16 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SCANN__UTILS_IO_NPY_H_
-#define SCANN__UTILS_IO_NPY_H_
+#ifndef SCANN_UTILS_IO_NPY_H_
+#define SCANN_UTILS_IO_NPY_H_
+
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
+#include "cnpy/cnpy.h"
 #include "scann/data_format/dataset.h"
 #include "scann/utils/io_oss_wrapper.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 template <typename T>
 std::string numpy_type_name();
@@ -74,7 +78,30 @@ Status DatasetToNumpy(absl::string_view filename, const DenseDataset<T>& data) {
   return SpanToNumpy(filename, data.data(), {data.size()});
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+template <typename T>
+StatusOr<pair<std::vector<T>, std::vector<size_t>>> NumpyToVectorAndShape(
+    absl::string_view filename) {
+  OpenSourceableFileReader reader(filename);
+  std::string header;
+  reader.ReadLine(header);
+
+  size_t word_size;
+  vector<size_t> shape;
+  bool fortran_order;
+  cnpy::parse_npy_header(reinterpret_cast<const unsigned char*>(header.c_str()),
+                         word_size, shape, fortran_order);
+  if (fortran_order) return FailedPreconditionError("Numpy file isn't C-style");
+  if (word_size != sizeof(T))
+    return FailedPreconditionError("word_size != sizeof(T): %d != %d",
+                                   word_size, sizeof(T));
+
+  size_t total_size = 1;
+  for (size_t s : shape) total_size *= s;
+  vector<T> buffer(total_size);
+  reader.Read(total_size * sizeof(T), reinterpret_cast<char*>(buffer.data()));
+  return std::make_pair(std::move(buffer), std::move(shape));
+}
+
+}  // namespace research_scann
 
 #endif

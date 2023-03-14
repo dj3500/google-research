@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SCANN__UTILS_COMMON_H_
-#define SCANN__UTILS_COMMON_H_
+#ifndef SCANN_UTILS_COMMON_H_
+#define SCANN_UTILS_COMMON_H_
 
 #include <stddef.h>
 
 #include <array>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -45,21 +47,21 @@
 #include "tensorflow/core/platform/prefetch.h"
 #include "tensorflow/core/platform/types.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 
 using ::std::array;
 using ::std::make_shared;
 using ::std::numeric_limits;
 using ::std::pair;
 using ::std::shared_ptr;
+using ::std::string;
 using ::std::tuple;
 using ::std::unique_ptr;
 using ::std::vector;
 
 using std::vector;
 
-using ::absl::make_unique;
+using ::std::make_unique;
 
 using ::absl::flat_hash_map;
 using ::absl::flat_hash_set;
@@ -81,8 +83,9 @@ using ::absl::Mutex;
 using ::absl::MutexLock;
 using ::absl::ReaderMutexLock;
 
+using ::tensorflow::Status;
 using OkStatus = Status;
-using internal::StatusOr;
+using ::tensorflow::StatusOr;
 
 #define MAKE_TF_ERROR_FORWARDER(ERRNAME)                                      \
   ABSL_MUST_USE_RESULT inline Status ERRNAME##Error(absl::string_view s) {    \
@@ -391,6 +394,15 @@ inline Status VerifyAllFinite(ConstSpan<double> span) {
   return VerifyAllFiniteImpl<double>(span);
 }
 
+inline Status VerifyAllFinite(ConstSpan<int8_t>) { return OkStatus(); }
+inline Status VerifyAllFinite(ConstSpan<uint8_t>) { return OkStatus(); }
+inline Status VerifyAllFinite(ConstSpan<int16_t>) { return OkStatus(); }
+inline Status VerifyAllFinite(ConstSpan<uint16_t>) { return OkStatus(); }
+inline Status VerifyAllFinite(ConstSpan<int32_t>) { return OkStatus(); }
+inline Status VerifyAllFinite(ConstSpan<uint32_t>) { return OkStatus(); }
+inline Status VerifyAllFinite(ConstSpan<int64_t>) { return OkStatus(); }
+inline Status VerifyAllFinite(ConstSpan<uint64_t>) { return OkStatus(); }
+
 struct VirtualDestructor {
   virtual ~VirtualDestructor() {}
 };
@@ -534,7 +546,6 @@ static_assert(IsSame<pair<int, float>,
                      RecursivelyRemoveCV<pair<const int, volatile float>>>(),
               "");
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

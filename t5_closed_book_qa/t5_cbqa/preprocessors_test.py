@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,11 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Tests for T5 CBQA preprocessors."""
 
 from absl.testing import absltest
-from t5.data import test_utils
+import t5.data
 import tensorflow.compat.v1 as tf
 
 from t5_closed_book_qa.t5_cbqa import preprocessors
@@ -104,7 +103,7 @@ class PreprocessorsTest(absltest.TestCase):
         }).map(_short_ans_to_ragged)
 
     dataset = preprocessors.natural_questions_nocontext(og_dataset)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         [
             {
@@ -128,7 +127,7 @@ class PreprocessorsTest(absltest.TestCase):
 
     dataset = preprocessors.natural_questions_nocontext(
         og_dataset, drop_yes_no=True)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         [
             {
@@ -150,7 +149,7 @@ class PreprocessorsTest(absltest.TestCase):
 
     dataset = preprocessors.natural_questions_nocontext(
         og_dataset, max_tokens=2)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         [
             {
@@ -172,7 +171,7 @@ class PreprocessorsTest(absltest.TestCase):
 
     dataset = preprocessors.natural_questions_nocontext(
         og_dataset, max_answers=1)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         [
             {
@@ -194,7 +193,7 @@ class PreprocessorsTest(absltest.TestCase):
 
     dataset = preprocessors.natural_questions_nocontext(
         og_dataset, drop_yes_no=True, max_tokens=2, max_answers=1)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         [
             {
@@ -216,7 +215,7 @@ class PreprocessorsTest(absltest.TestCase):
 
     dataset = preprocessors.natural_questions_nocontext(
         og_dataset, drop_yes_no=True, max_tokens=1)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         [
             {
@@ -236,7 +235,7 @@ class PreprocessorsTest(absltest.TestCase):
     }
     og_dataset = tf.data.Dataset.from_tensors(input_data)
     dataset = preprocessors.natural_questions_open(og_dataset)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         {
             'inputs': 'nq question: What are the names of the Olsen Twins?',
@@ -258,7 +257,7 @@ class PreprocessorsTest(absltest.TestCase):
 
     dataset = preprocessors.trivia_qa_open(og_dataset)
 
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         {
             'inputs':
@@ -278,7 +277,7 @@ class PreprocessorsTest(absltest.TestCase):
 
     dataset = preprocessors.web_questions_open(og_dataset)
 
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         dataset,
         {
             'inputs': 'wq question: What are the names of the Olsen Twins?',
@@ -296,7 +295,7 @@ class PreprocessorsTest(absltest.TestCase):
     og_dataset = tf.data.Dataset.from_tensors(input_data)
 
     tf.set_random_seed(42)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         preprocessors.sample_answer(og_dataset),
         {
             'inputs': 'What are the names of the Olsen Twins?',
@@ -305,13 +304,70 @@ class PreprocessorsTest(absltest.TestCase):
         }
     )
     tf.set_random_seed(420)
-    test_utils.assert_dataset(
+    t5.data.assert_dataset(
         preprocessors.sample_answer(og_dataset),
         {
             'inputs': ['What are the names of the Olsen Twins?'],
             'targets': ['Mary-Kate'],
             'answers': ['Mary-Kate', 'Ashley']
         }
+    )
+
+  def test_mask_salient_spans(self):
+    input_examples = [
+        {
+            'text': 'He was confident that it would be well received.',
+            'spans': {
+                'start': [],
+                'limit': [],
+            }
+        },
+        {
+            'text':
+                'The episode was filmed over three days at the end of October '
+                'and beginning of November 2002.',
+            'spans': {
+                'start': [53, 78],
+                'limit': [60, 91],
+            }
+        }
+    ]
+
+    og_dataset = tf.data.Dataset.from_generator(
+        lambda: (x for x in input_examples),
+        output_types={
+            'text': tf.string,
+            'spans': {
+                'start': tf.int64,
+                'limit': tf.int64,
+            },
+        },
+        output_shapes={
+            'text': [],
+            'spans': {
+                'start': [None],
+                'limit': [None],
+            },
+        })
+
+    dataset = preprocessors.mask_salient_spans(og_dataset)
+
+    t5.data.assert_dataset(
+        dataset,
+        [
+            {
+                'inputs':
+                    'nem: The episode was filmed over three days at the end of '
+                    '_X_ and beginning of November 2002.',
+                'targets': 'October'
+            },
+            {
+                'inputs':
+                    'nem: The episode was filmed over three days at the end of '
+                    'October and beginning of _X_.',
+                'targets': 'November 2002'
+            }
+        ]
     )
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,13 @@
 
 
 
-#ifndef SCANN__HASHES_INTERNAL_ASYMMETRIC_HASHING_IMPL_H_
-#define SCANN__HASHES_INTERNAL_ASYMMETRIC_HASHING_IMPL_H_
+#ifndef SCANN_HASHES_INTERNAL_ASYMMETRIC_HASHING_IMPL_H_
+#define SCANN_HASHES_INTERNAL_ASYMMETRIC_HASHING_IMPL_H_
 
 #include <cmath>
+#include <cstdint>
+#include <utility>
+#include <vector>
 
 #include "scann/base/restrict_allowlist.h"
 #include "scann/data_format/datapoint.h"
@@ -26,15 +29,33 @@
 #include "scann/hashes/internal/asymmetric_hashing_postprocess.h"
 #include "scann/oss_wrappers/scann_aligned_malloc.h"
 #include "scann/utils/common.h"
-#include "tensorflow/core/platform/prefetch.h"
-
 #include "scann/utils/datapoint_utils.h"
 #include "scann/utils/top_n_amortized_constant.h"
 #include "scann/utils/types.h"
+#include "tensorflow/core/platform/prefetch.h"
 
-namespace tensorflow {
-namespace scann_ops {
+namespace research_scann {
 namespace asymmetric_hashing_internal {
+
+template <typename FloatT>
+StatusOr<double> ComputeNormBiasCorrection(
+    const DenseDataset<FloatT>& db, DatapointPtr<double> center,
+    ConstSpan<DatapointIndex> cluster_members) {
+  if (cluster_members.empty()) return 1.0;
+  SCANN_RETURN_IF_ERROR(VerifyAllFinite(center.values_slice()));
+  double mean_norm = 0.0;
+  for (DatapointIndex idx : cluster_members) {
+    SCANN_RETURN_IF_ERROR(VerifyAllFinite(db[idx].values_slice()));
+    mean_norm += std::sqrt(SquaredL2Norm(db[idx]));
+  }
+  SCANN_RET_CHECK(std::isfinite(mean_norm)) << mean_norm;
+  mean_norm /= cluster_members.size();
+  SCANN_RET_CHECK(std::isfinite(mean_norm))
+      << mean_norm << " " << cluster_members.size();
+  const double center_norm = std::sqrt(SquaredL2Norm(center));
+  SCANN_RET_CHECK(std::isfinite(center_norm)) << center_norm;
+  return (center_norm == 0.0) ? 1.0 : (mean_norm / center_norm);
+}
 
 template <typename T>
 inline vector<DenseDataset<FloatingTypeFor<T>>> ConvertCentersIfNecessary(
@@ -60,7 +81,7 @@ struct AhImpl {
 
   static StatusOr<std::vector<DenseDataset<double>>> TrainAsymmetricHashing(
       const TypedDataset<T>& dataset, const TrainingOptionsT& opts,
-      shared_ptr<thread::ThreadPool> pool);
+      shared_ptr<ThreadPool> pool);
 
   static Status IndexDatapoint(const DatapointPtr<T>& input,
                                const ChunkingProjection<T>& projection,
@@ -79,7 +100,7 @@ struct AhImpl {
       const DatapointPtr<T>& original_dptr,
       const ChunkingProjection<T>& projection,
       ConstSpan<DenseDataset<FloatingTypeFor<T>>> centers, double threshold,
-      MutableSpan<uint8_t> result);
+      double eta, MutableSpan<uint8_t> result);
 
   static StatusOr<std::vector<float>> CreateRawFloatLookupTable(
       const DatapointPtr<T>& query, const ChunkingProjection<T>& projection,
@@ -93,7 +114,7 @@ template <typename T>
 StatusOr<std::vector<DenseDataset<double>>> TrainAsymmetricHashing(
     const TypedDataset<T>& dataset,
     const asymmetric_hashing2::TrainingOptionsTyped<T>& opts,
-    shared_ptr<thread::ThreadPool> pool) {
+    shared_ptr<ThreadPool> pool) {
   return AhImpl<T>::TrainAsymmetricHashing(dataset, opts, std::move(pool));
 }
 
@@ -115,18 +136,6 @@ Status IndexDatapoint(const DatapointPtr<T>& input,
                       MutableSpan<uint8_t> result) {
   return AhImpl<T>::IndexDatapoint(input, projection, quantization_distance,
                                    centers, result);
-}
-
-template <typename T>
-Status IndexDatapointNoiseShaped(
-    const DatapointPtr<T>& maybe_residual_dptr,
-    const DatapointPtr<T>& original_dptr,
-    const ChunkingProjection<T>& projection,
-    ConstSpan<DenseDataset<FloatingTypeFor<T>>> centers, double threshold,
-    MutableSpan<uint8_t> result) {
-  return AhImpl<T>::IndexDatapointNoiseShaped(maybe_residual_dptr,
-                                              original_dptr, projection,
-                                              centers, threshold, result);
 }
 
 template <typename T>
@@ -380,21 +389,33 @@ GetNeighborsViaAsymmetricDistanceWithCompileTimeNumCenters(
     const LookupElement* cur_lookup_row =
         lookup.data() + num_centers * (num_blocks - 1);
     ssize_t j = num_blocks - 1;
+    DCHECK_LT(hashed_database_point0[j], num_centers);
     UnsignedDist sum0 = cur_lookup_row[hashed_database_point0[j]];
+    DCHECK_LT(hashed_database_point1[j], num_centers);
     UnsignedDist sum1 = cur_lookup_row[hashed_database_point1[j]];
+    DCHECK_LT(hashed_database_point2[j], num_centers);
     UnsignedDist sum2 = cur_lookup_row[hashed_database_point2[j]];
+    DCHECK_LT(hashed_database_point3[j], num_centers);
     UnsignedDist sum3 = cur_lookup_row[hashed_database_point3[j]];
+    DCHECK_LT(hashed_database_point4[j], num_centers);
     UnsignedDist sum4 = cur_lookup_row[hashed_database_point4[j]];
+    DCHECK_LT(hashed_database_point5[j], num_centers);
     UnsignedDist sum5 = cur_lookup_row[hashed_database_point5[j]];
     cur_lookup_row -= num_centers;
     --j;
 
     for (; j >= 0; --j) {
+      DCHECK_LT(hashed_database_point0[j], num_centers);
       sum0 += cur_lookup_row[hashed_database_point0[j]];
+      DCHECK_LT(hashed_database_point1[j], num_centers);
       sum1 += cur_lookup_row[hashed_database_point1[j]];
+      DCHECK_LT(hashed_database_point2[j], num_centers);
       sum2 += cur_lookup_row[hashed_database_point2[j]];
+      DCHECK_LT(hashed_database_point3[j], num_centers);
       sum3 += cur_lookup_row[hashed_database_point3[j]];
+      DCHECK_LT(hashed_database_point4[j], num_centers);
       sum4 += cur_lookup_row[hashed_database_point4[j]];
+      DCHECK_LT(hashed_database_point5[j], num_centers);
       sum5 += cur_lookup_row[hashed_database_point5[j]];
       cur_lookup_row -= num_centers;
     }
@@ -411,9 +432,11 @@ GetNeighborsViaAsymmetricDistanceWithCompileTimeNumCenters(
     const LookupElement* cur_lookup_row = lookup.data();
     const uint8_t* hashed_database_point =
         hashed_database->GetPtr(it.GetOffsetIndex(offset));
+    DCHECK_LT(hashed_database_point[0], num_centers);
     UnsignedDist sum = cur_lookup_row[hashed_database_point[0]];
     cur_lookup_row += num_centers;
     for (size_t j = 1; j < num_blocks; ++j) {
+      DCHECK_LT(hashed_database_point[j], num_centers);
       sum += cur_lookup_row[hashed_database_point[j]];
       cur_lookup_row += num_centers;
     }
@@ -522,7 +545,6 @@ extern template class PopulateDistancesIterator<6, AddBiasFunctor>;
 extern template class PopulateDistancesIterator<6, LimitedInnerFunctor>;
 
 }  // namespace asymmetric_hashing_internal
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann
 
 #endif

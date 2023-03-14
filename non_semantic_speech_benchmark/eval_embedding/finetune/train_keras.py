@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lint as: python3
 """Trains on embeddings using Keras."""
 
 from absl import app
@@ -79,9 +78,10 @@ def train_and_report(debug=False):
   y_onehot_spec = ds.element_spec[1]
   assert len(y_onehot_spec.shape) == 2, y_onehot_spec.shape
   num_classes = y_onehot_spec.shape[1]
-  model = get_model(
-      num_classes, ubn=FLAGS.use_batch_normalization, nc=FLAGS.num_clusters,
-      alpha_init=FLAGS.alpha_init)
+  model = models.get_keras_model(
+      num_classes, input_length=FLAGS.min_length,
+      use_batchnorm=FLAGS.use_batch_normalization,
+      num_clusters=FLAGS.num_clusters, alpha_init=FLAGS.alpha_init)
   # Define loss and optimizer hyparameters.
   loss_obj = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
   opt = tf.keras.optimizers.Adam(
@@ -146,11 +146,6 @@ def get_train_step(model, loss_obj, opt, train_loss, train_accuracy,
       tf.summary.scalar('accuracy', train_accuracy.result(), step=step)
 
   return train_step
-
-
-def get_model(num_classes, ubn=None, nc=None, alpha_init=None):
-  return models.get_keras_model(
-      num_classes, ubn, num_clusters=nc, alpha_init=alpha_init)
 
 
 def main(unused_argv):

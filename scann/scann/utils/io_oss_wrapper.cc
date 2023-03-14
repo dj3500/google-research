@@ -1,4 +1,4 @@
-// Copyright 2020 The Google Research Authors.
+// Copyright 2022 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,11 @@
 
 #include "scann/utils/io_oss_wrapper.h"
 
-namespace tensorflow {
-namespace scann_ops {
+#include <algorithm>
+#include <memory>
+#include <string>
+
+namespace research_scann {
 
 OpenSourceableFileWriter::OpenSourceableFileWriter(absl::string_view filename)
     : fout_(std::string(filename), std::ofstream::binary) {}
@@ -23,6 +26,17 @@ OpenSourceableFileWriter::OpenSourceableFileWriter(absl::string_view filename)
 Status OpenSourceableFileWriter::Write(ConstSpan<char> bytes) {
   fout_.write(bytes.data(), bytes.size());
   return OkStatus();
+}
+
+OpenSourceableFileReader::OpenSourceableFileReader(absl::string_view filename)
+    : fin_(std::string(filename), std::ifstream::binary) {}
+
+void OpenSourceableFileReader::ReadLine(std::string& dest) {
+  std::getline(fin_, dest);
+}
+
+void OpenSourceableFileReader::Read(size_t bytes, char* buffer) {
+  fin_.read(buffer, bytes);
 }
 
 Status WriteProtobufToFile(absl::string_view filename,
@@ -45,5 +59,4 @@ Status ReadProtobufFromFile(absl::string_view filename,
   return OkStatus();
 }
 
-}  // namespace scann_ops
-}  // namespace tensorflow
+}  // namespace research_scann

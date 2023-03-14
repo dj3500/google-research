@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2020 The Google Research Authors.
+# Copyright 2022 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,29 +16,17 @@
 """This module contains utilities for source code tokenization."""
 
 import abc
+import dataclasses
 import tokenize
+from typing import Collection
 from typing import Dict
 from typing import Iterable
-from typing import List
 from typing import Mapping
 from typing import Sequence
 from typing import Text
 from typing import Union
 
-import dataclasses
-
 from cubert import unified_tokenizer
-
-# Quote string for special tokens.
-SPECIAL_QUOTE = '___'
-
-
-def quote_special(content):
-  return '{q}{t}{q}'.format(q=SPECIAL_QUOTE, t=content)
-
-ENDMARKER = 'ENDMARKER'
-
-NEWLINE = quote_special('NEWLINE')
 
 # After all splitting, the longest a token is of the following length.
 MAX_OUTPUT_TOKEN_LENGTH = 15
@@ -53,17 +41,17 @@ class CuBertTokenizer(abc.ABC):
 
   def __init__(self, max_output_token_length = MAX_OUTPUT_TOKEN_LENGTH,
                reserved = ()):
-    self.types_to_skip = []
+    self.types_to_skip = ()
     self.reserved = reserved
     self.mappings: Dict[str, str]
     self.update_mappings({
         # By default, replace \n and \r. This is meant primarily for literals.
         '\n':
-            quote_special('NLCHAR'),
+            unified_tokenizer.quote_special('NLCHAR'),
         '\r':
-            quote_special('CR'),
+            unified_tokenizer.quote_special('CR'),
         unified_tokenizer.SENTINEL:
-            quote_special(unified_tokenizer.SENTINEL_ESCAPE),
+            unified_tokenizer.quote_special(unified_tokenizer.SENTINEL_ESCAPE),
     })
     self.max_output_token_length = max_output_token_length
 
@@ -98,14 +86,15 @@ class CuBertTokenizer(abc.ABC):
     """
 
   def update_types_to_skip(
-      self, types_to_skip):
+      self, types_to_skip
+  ):
     """Replaces the set of token types that are ignored.
 
     Each tokenizer may provide different semantics with respect to this list,
     and may ignore it altogether.
 
     Args:
-      types_to_skip: List of types (from the constants in the `token` module) or
+      types_to_skip: Types (from the constants in the `token` module) or
         `unified_tokenizer.TokenKind`. Note that some of those constants are
         actually defined in the `tokenize` module.
     """
@@ -186,20 +175,25 @@ class CuBertTokenizer(abc.ABC):
     subtokens = unified_tokenizer.flatten_subtoken_lists(multi_tokens)
     return subtokens
 
-  def untokenize(self, token_list):
-    """Untokenizes via `untokenize_abstract`."""
+  def untokenize_agnostic(self, token_list):
+    """Turns CuBERT subtokens into whole tokens."""
     # Untokenize agnostic.
-    if (not token_list or token_list[-1] != quote_special(
+    if (not token_list or token_list[-1] != unified_tokenizer.quote_special(
         unified_tokenizer.TokenKind.EOS.name)):
-      raise ValueError(
-          'Token list %r should end with the EOS token %r.' %
-          (token_list, quote_special(unified_tokenizer.TokenKind.EOS.name)))
+      raise ValueError('Token list %r should end with the EOS token %r.' %
+                       (token_list,
+                        unified_tokenizer.quote_special(
+                            unified_tokenizer.TokenKind.EOS.name)))
 
     whole_tokens = unified_tokenizer.reconstitute_full_unsanitary_tokens(
         token_list,
         sanitization_mapping=self.mappings,
         sentinel=unified_tokenizer.SENTINEL)
+    return whole_tokens
 
+  def untokenize(self, token_list):
+    """Untokenizes via `untokenize_abstract`."""
+    whole_tokens = self.untokenize_agnostic(token_list)
     return self.untokenize_abstract(whole_tokens)
 
 
@@ -207,4 +201,4 @@ def token_from_token_type(token_type):
   """Turns a token type into a reserved token string."""
   # We use the tok_name dict from tokenize, not token. The former has
   # NL and COMMENT and such, whereas the latter doesn't.
-  return quote_special(tokenize.tok_name[token_type])
+  return unified_tokenizer.quote_special(tokenize.tok_name[token_type])
