@@ -235,7 +235,7 @@ void ClusteringExperiment(int lower_i, int upper_i) {
   std::vector<std::unique_ptr<Matroid>> matroids;
   std::vector<FairnessConstraint> fairness;
 
-  for (int i = 3; i <= 12; i++) {
+  for (int i = 5; i <= 12; i++) {
     int rank = 5 * i;
     ranks.push_back(rank);
     std::vector<int> groups_bounds(ngrps, i);
