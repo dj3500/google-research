@@ -25,9 +25,6 @@
 
 #include "graph.h"
 
-#include "absl/container/node_hash_map.h"
-#include "absl/container/node_hash_set.h"
-
 using std::unordered_set;
 using std::vector;
 
@@ -55,12 +52,12 @@ Graph::Graph(const std::string& name) : name_(name) {
     Fail("graph file does not exist");
   }
   // renumber[x] = new number of x
-  absl::node_hash_map<int64_t, int> renumber;
+  std::unordered_map<int64_t, int> renumber;
   numVertices_ = 0;
   numEdges_ = 0;
   const bool is_dblp = (name_ == "dblp");
   int64_t first_endpoint, second_endpoint;
-  absl::node_hash_set<int> leftVertices, rightVertices;
+  std::set<int> left_vertices, right_vertices;
   while (input >> first_endpoint >> second_endpoint) {
     if (!renumber.count(first_endpoint)) {
       renumber[first_endpoint] = numVertices_;
