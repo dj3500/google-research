@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from dopamine.agents.dqn import dqn_agent as base_dqn_agent
+from dopamine.tf.agents.dqn import dqn_agent as base_dqn_agent
 import numpy as np
 import tensorflow.compat.v1 as tf
 

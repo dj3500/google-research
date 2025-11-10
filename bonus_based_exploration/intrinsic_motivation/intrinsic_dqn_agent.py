@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import os
 from bonus_based_exploration.intrinsic_motivation import base_intrinsic_agent
 from bonus_based_exploration.intrinsic_motivation import intrinsic_rewards
 
-from dopamine.agents.dqn import dqn_agent as base_dqn_agent
+from dopamine.tf.agents.dqn import dqn_agent as base_dqn_agent
 import gin
 import numpy as np
 import tensorflow.compat.v1 as tf

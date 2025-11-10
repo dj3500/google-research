@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,14 +38,14 @@ import tensorflow.compat.v2 as tf
 
 from collections import OrderedDict
 
-from utils import checkpoint_utils  # pytype: disable=import-error
-from utils import cmd_args_utils  # pytype: disable=import-error
-from utils import data_utils  # pytype: disable=import-error
-from utils import losses  # pytype: disable=import-error
-from utils import models  # pytype: disable=import-error
-from utils import precision_utils  # pytype: disable=import-error
-from utils import train_utils  # pytype: disable=import-error
-from utils import tree_utils  # pytype: disable=import-error
+from bnn_hmc.utils import checkpoint_utils  # pytype: disable=import-error
+from bnn_hmc.utils import cmd_args_utils  # pytype: disable=import-error
+from bnn_hmc.utils import data_utils  # pytype: disable=import-error
+from bnn_hmc.utils import losses  # pytype: disable=import-error
+from bnn_hmc.utils import models  # pytype: disable=import-error
+from bnn_hmc.utils import precision_utils  # pytype: disable=import-error
+from bnn_hmc.utils import train_utils  # pytype: disable=import-error
+from bnn_hmc.utils import tree_utils  # pytype: disable=import-error
 
 
 def print_visible_devices():
@@ -80,7 +80,7 @@ def get_data_model_fns(args):
       args.weight_decay, args.temperature)
 
   key, net_init_key = jax.random.split(jax.random.PRNGKey(args.seed), 2)
-  init_data = jax.tree_map(lambda elem: elem[0][:1], train_set)
+  init_data = jax.tree.map(lambda elem: elem[0][:1], train_set)
   params, net_state = net_init(net_init_key, init_data, True)
 
   param_types = tree_utils.tree_get_types(params)

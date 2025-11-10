@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@
 import collections
 import itertools
 
-from dopamine.replay_memory import circular_replay_buffer as crb
-from dopamine.replay_memory import sum_tree
+from dopamine.tf.replay_memory import circular_replay_buffer as crb
+from dopamine.tf.replay_memory import sum_tree
 import gin
 import numpy as np
 import tensorflow.compat.v2 as tf

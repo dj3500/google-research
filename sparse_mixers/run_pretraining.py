@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -322,7 +322,7 @@ def train_and_evaluate(config, workdir,
       decay_steps=config.num_train_steps - config.num_warmup_steps,
   )
 
-  tx = optax.adamw(
+  tx = optax.adamw(  # pytype: disable=wrong-arg-types  # numpy-scalars
       learning_rate_fn, b1=0.9, b2=0.999, eps=1e-6, weight_decay=0.01)
   if config.clipped_grad_norm:
     tx = optax.chain(optax.clip_by_global_norm(config.clipped_grad_norm), tx)
@@ -384,7 +384,7 @@ def train_and_evaluate(config, workdir,
       tick = time.time()
       state, train_step_stats, rngs = p_train_step(state, train_batch, rng=rngs)
       if config.measure_step_speed:
-        jax.tree_map(lambda opt: opt.block_until_ready(), state)
+        jax.tree.map(lambda opt: opt.block_until_ready(), state)
         tock = time.time()
         seconds += tock - tick
 
@@ -395,7 +395,7 @@ def train_and_evaluate(config, workdir,
       # We allow all hosts to potentially save checkpoints because some model
       # parameters are sharded across devices. Parameters replicated across
       # devices (i.e. not sharded) will only be checkpointed by host 0.
-      unreplicated_state = jax.tree_map(
+      unreplicated_state = jax.tree.map(
           np.array,
           core_utils.tree_unreplicate_by_name(state, not_sharded_match_fn))
       checkpoints.save_checkpoint(

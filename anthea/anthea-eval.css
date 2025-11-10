@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The Google Research Authors.
+ * Copyright 2025 The Google Research Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,34 @@
  * limitations under the License.
  */
 
-
+*:lang(ar) {
+  direction: rtl;
+  unicode-bidi: embed;
+}
+*:lang(fa) {
+  direction: rtl;
+  unicode-bidi: embed;
+}
+*:lang(he) {
+  direction: rtl;
+  unicode-bidi: embed;
+}
+*:lang(iw) {
+  direction: rtl;
+  unicode-bidi: embed;
+}
+*:lang(ur) {
+  direction: rtl;
+  unicode-bidi: embed;
+}
+*:lang(ps) {
+  direction: rtl;
+  unicode-bidi: embed;
+}
+*:lang(yi) {
+  direction: rtl;
+  unicode-bidi: embed;
+}
 .anthea-bold {
   font-weight: bold;
 }
@@ -53,6 +80,21 @@
 .anthea-context-image-cell {
   position: relative;
 }
+.anthea-source-media-cell {
+  position: relative;
+  padding-bottom: 56.25%;
+  padding-top: 35px;
+  height: 0;
+  overflow: hidden;
+}
+.anthea-source-media-cell img, .anthea-source-media-cell iframe {
+  position: absolute;
+  top:0;
+  left: 0;
+  object-fit: contain;
+  width: 100%;
+  height: 100%;
+}
 .anthea-context-image {
   cursor: zoom-in;
   margin: 0;
@@ -89,6 +131,9 @@
   position: relative;
   margin-top: 12px;
 }
+.anthea-deleted-error {
+  text-decoration: line-through;
+}
 .anthea-docnav-eval-button {
   margin-right: 8px;
   padding: 12px;
@@ -123,6 +168,7 @@
   table-layout: fixed;
 }
 .anthea-document-text-table p {
+  margin-bottom: 20px;
   max-width: 100ch;
   overflow-wrap: anywhere;
 }
@@ -131,22 +177,35 @@
   border: 1px solid black;
   box-sizing: border-box;
 }
-.anthea-document-text-table > tr > td:nth-of-type(1),
-.anthea-document-text-table > tr > td:nth-of-type(2) {
+.anthea-document-text-table > tr > td:nth-of-type(1):nth-last-of-type(3),
+.anthea-document-text-table > tr > td:nth-of-type(2):nth-last-of-type(2) {
   max-width: 100ch;
   width: 40%;
+}
+.anthea-document-text-table > tr > td:nth-of-type(1):nth-last-of-type(4),
+.anthea-document-text-table > tr > td:nth-of-type(2):nth-last-of-type(3),
+.anthea-document-text-table > tr > td:nth-of-type(3):nth-last-of-type(2), {
+  max-width: 100ch;
+  width: 28%;
 }
 .anthea-document-text-table > tr:nth-of-type(2),
 .anthea-document-text-table > tr:nth-of-type(2) > td {
   border-bottom: 0 solid;
 }
-.anthea-document-text-table > tr > td:nth-of-type(3) {
+.anthea-document-text-table > tr > td:nth-of-type(3):nth-last-of-type(1) {
   max-width: 320px;
   width: 20%;
+}
+.anthea-document-text-table > tr > td:nth-of-type(4):nth-last-of-type(1) {
+  max-width: 320px;
+  width: 16%;
 }
 .anthea-document-text-table > tr:nth-of-type(3),
 .anthea-document-text-table > tr:nth-of-type(3) > td {
   border-top: 0 solid;
+}
+.anthea-being-edited {
+  text-decoration: red wavy underline;
 }
 .anthea-error-button {
   background-color: lightblue;
@@ -194,12 +253,12 @@
   text-align: center;
 }
 .anthea-eval-panel {
+  background: white;
   border-top: 1px solid black;
   box-sizing: border-box;
   display: inline-block;
   left: 0;
   max-height: 640px;
-  overflow-y: auto;
   position: absolute;
   text-align: left;
   width: 100%;
@@ -213,11 +272,15 @@
   text-align: center;
   vertical-align: top;
 }
+.anthea-eval-panel-mod {
+  min-height: 6ex;
+  width: 24px;
+}
 .anthea-eval-panel-nav {
   width: 25px;
 }
-.anthea-eval-panel-short {
-  min-height: 6ex;
+.anthea-eval-panel-row:hover .anthea-modifier-menu {
+  display: block;
 }
 .anthea-eval-panel-subtypes {
   background-clip: border-box;
@@ -274,7 +337,7 @@
 .anthea-feedback-panel {
   background-image:
     repeating-linear-gradient(to bottom, white, white 13px, lightgray 14px);
-  height: 150px;
+  height: 80px;
   outline: none;
   text-align: left;
   white-space: break-spaces;
@@ -326,6 +389,31 @@
 .anthea-hotw-revealed {
   background: lightblue;
 }
+.anthea-modifier-menu-button {
+  background: whitesmoke;
+  min-height: 4ex;
+  min-width: 140px;
+}
+.anthea-modifier-menu-parent {
+  position: relative;
+}
+.anthea-modifier-menu {
+  background: white;
+  display: none;
+  position: absolute;
+  right: 0;
+  top: 6ex;
+  z-index: 3;
+}
+.anthea-note-to-raters {
+  font-weight: bold;
+  color: black;
+}
+.anthea-note-to-raters:before {
+  content: "PLEASE NOTE: ";
+  font-weight: bold;
+  color: red;
+}
 .anthea-mqm-instructions li {
   line-height: 1.2;
   margin: 8px auto;
@@ -333,7 +421,7 @@
 #anthea-mqm-list-of-severities {
   line-height: 2;
 }
-.anthea-sentence-nav {
+.anthea-paralet-nav {
   cursor: pointer;
 }
 .anthea-space-active,
@@ -345,6 +433,10 @@
   font-style: italic;
   padding: 4px;
   vertical-align: bottom;
+}
+.anthea-subheading {
+  font-size: 80%;
+  font-style: italic;
 }
 .anthea-text-heading {
   background: whitesmoke;
@@ -364,4 +456,34 @@
 }
 .anthea-word-active-begin:hover {
   outline: 1px solid lightgray;
+}
+.anthea-slider {
+  --slider-unset-thumb-color: rgb(255, 0, 0);
+  --slider-set-thumb-color: rgb(0, 0, 255);
+  --slider-thumb-color: var(--slider-unset-thumb-color);
+  -webkit-appearance: none;
+  width: 98%;
+  height: 15px;
+  background: #d3d3d3;
+  outline: none;
+  opacity: 0.7;
+  -webkit-transition: .2s;
+  transition: opacity .2s;
+}
+.anthea-slider:hover {
+  opacity: 1;
+}
+.anthea-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  background: var(--slider-thumb-color);
+  cursor: pointer;
+}
+.anthea-slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  background: var(--slider-thumb-color);
+  cursor: pointer;
 }

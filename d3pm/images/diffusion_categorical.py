@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -336,9 +336,9 @@ class CategoricalDiffusion:
     """Sample from q(x_t | x_start) (i.e. add noise to the data).
 
     Args:
-      x_start: jnp.array: original clean data, in integer form (not onehot).
+      x_start: jnp.ndarray: original clean data, in integer form (not onehot).
         shape = (bs, ...).
-      t: :jnp.array: timestep of the diffusion process, shape (bs,).
+      t: :jnp.ndarray: timestep of the diffusion process, shape (bs,).
       noise: jnp.ndarray: uniform noise on [0, 1) used to sample noisy data.
         Should be of shape (*x_start.shape, num_pixel_vals).
 
@@ -349,7 +349,7 @@ class CategoricalDiffusion:
     logits = jnp.log(self.q_probs(x_start, t) + self.eps)
 
     # To avoid numerical issues clip the noise to a minimum value
-    noise = jnp.clip(noise, a_min=jnp.finfo(noise.dtype).tiny, a_max=1.)
+    noise = jnp.clip(noise, min=jnp.finfo(noise.dtype).tiny, max=1.)
     gumbel_noise = - jnp.log(-jnp.log(noise))
     return jnp.argmax(logits + gumbel_noise, axis=-1)
 
@@ -480,7 +480,7 @@ class CategoricalDiffusion:
     nonzero_mask = (t != 0).astype(x.dtype).reshape(x.shape[0],
                                                     *([1] * (len(x.shape))))
     # For numerical precision clip the noise to a minimum value
-    noise = jnp.clip(noise, a_min=jnp.finfo(noise.dtype).tiny, a_max=1.)
+    noise = jnp.clip(noise, min=jnp.finfo(noise.dtype).tiny, max=1.)
     gumbel_noise = -jnp.log(-jnp.log(noise))
 
     sample = jnp.argmax(model_logits + nonzero_mask * gumbel_noise, axis=-1)

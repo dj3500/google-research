@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,13 @@
 # limitations under the License.
 
 """Mesh Utils."""
-from typing import Optional, Tuple, Sequence
+from typing import Optional, Sequence, Tuple
 
 import chex
 import jax
+from jax import lax
 from jax.experimental import maps
 from jax.experimental import mesh_utils
-from jax.experimental import pjit as epjit
 
 
 def create_partition_spec(*args):
@@ -36,7 +36,7 @@ def with_sharding_constraint(
   if is_cpu or is_single_device or not has_global_mesh:
     return x
   else:
-    return epjit.with_sharding_constraint(x, axis_resources)
+    return lax.with_sharding_constraint(x, axis_resources)
 
 
 def map_leading_axis_to_pspec(

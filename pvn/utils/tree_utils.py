@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ def _traverse_with_names(tree):
     tree = flax.serialization.to_state_dict(tree)
   # Don't output the non-leaf nodes. If the optimizer doesn't have a state
   # the tree leaves can be Nones which was interpreted as a leaf by this
-  # function but not by the other functions (like jax.tree_map).
+  # function but not by the other functions (like jax.tree.map).
   if tree is None:
     return
   elif isinstance(tree, Mapping):
@@ -81,7 +81,7 @@ def tree_flatten_with_names(tree):
 
 
 def tree_map_with_names(f, tree, *rest):
-  """Like jax.tree_map but with a filter on the leaf path name.
+  """Like jax.tree.map but with a filter on the leaf path name.
 
   Args:
     f: A function with first parameter `name` (path-like "a/b/c") and remaining
@@ -124,8 +124,13 @@ def tree_map_with_regex(f, tree, regex_rules, not_f=lambda x: x, name=None):
     for pattern, *args in regex_rules:
       if re.fullmatch(pattern, vname):
         if name and jax.process_index() == 0:
-          logging.info("Applying %s to %s with %s due to `%s`", name, vname,
-                       args, pattern)
+          logging.info(
+              "Applying %s to %s with %s due to `%s`",
+              name,
+              vname,
+              args,
+              pattern,
+          )
         return f(v, *args)
     return not_f(v)
 
@@ -160,10 +165,13 @@ def filter_empty_nodes(
       return other_trees
     result_trees = [{} for _ in other_trees]
     for k, v in mask_tree.items():
-      if v is not None and not isinstance(v, (
-          optax.EmptyState,
-          optax.MaskedNode,
-      )):
+      if v is not None and not isinstance(
+          v,
+          (
+              optax.EmptyState,
+              optax.MaskedNode,
+          ),
+      ):
         values = _filter_helper(v, *(t[k] for t in other_trees))
         for i, v1 in enumerate(values):
           if isinstance(v1, dict):
@@ -175,7 +183,8 @@ def filter_empty_nodes(
 
   def _filter_helper(mask_tree, *other_trees):
     return jax.tree_util.tree_map(
-        _filter, mask_tree, *other_trees, is_leaf=lambda x: isinstance(x, dict))
+        _filter, mask_tree, *other_trees, is_leaf=lambda x: isinstance(x, dict)
+    )
 
   mask_tree = flax.serialization.to_state_dict(mask_tree)
   other_trees = (flax.serialization.to_state_dict(t) for t in other_trees)

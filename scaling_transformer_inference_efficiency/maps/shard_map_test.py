@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -119,7 +119,7 @@ class ShardMapTest(absltest.TestCase):
 
     mesh, a, _ = create_inputs(P('z', ('x', 'y')), P(None, None))
 
-    assert a.device_buffers[0].shape == (4, 2)
+    assert a.addressable_data(0).shape == (4, 2)
 
     def identity(x):
       return x
@@ -137,9 +137,9 @@ class ShardMapTest(absltest.TestCase):
       c = jax.jit(fwd)(a)
       # c = pjit(
       #     fwd,
-      #     in_axis_resources=(P('z', ('x', 'y')),),
-      #     out_axis_resources=P('z', ('x', 'y')))(a)
-    assert c.device_buffers[0].shape == (4, 2)
+      #     in_shardings=(P('z', ('x', 'y')),),
+      #     out_shardings=P('z', ('x', 'y')))(a)
+    assert c.addressable_data(0).shape == (4, 2)
 
   #   ###############################################################################
 
@@ -149,7 +149,7 @@ class ShardMapTest(absltest.TestCase):
 
     mesh, a, _ = create_inputs(P('z', ('x', 'y')), P(None, None))
 
-    assert a.device_buffers[0].shape == (4, 2)
+    assert a.addressable_data(0).shape == (4, 2)
 
     def all_gather(x):
       return lax.all_gather(x, 'z', axis=0, tiled=True)
@@ -168,9 +168,9 @@ class ShardMapTest(absltest.TestCase):
       c = jax.jit(fwd)(a)
       # c = pjit(
       #     fwd,
-      #     in_axis_resources=(P('z', ('x', 'y')),),
-      #     out_axis_resources=P(None, ('x', 'y')))(a)
-    assert c.device_buffers[0].shape == (8, 2)
+      #     in_shardings=(P('z', ('x', 'y')),),
+      #     out_shardings=P(None, ('x', 'y')))(a)
+    assert c.addressable_data(0).shape == (8, 2)
 
   ##########################################################################
 
@@ -180,7 +180,7 @@ class ShardMapTest(absltest.TestCase):
 
     mesh, a, b = create_inputs(P('z', 'y'), P('y', None))
 
-    assert a.device_buffers[0].shape == (4, 4)
+    assert a.addressable_data(0).shape == (4, 4)
 
     def matmul_partial(a, b):
       c = jnp.matmul(a, b)  # [B.z, F] {y.unreduced}
@@ -198,9 +198,9 @@ class ShardMapTest(absltest.TestCase):
       c = jax.jit(fwd)(a, b)
       # c = pjit(
       #     fwd,
-      #     in_axis_resources=(P('z', 'y'), P('y', None)),
-      #     out_axis_resources=P('z', 'y'))(a, b)
-    assert c.device_buffers[0].shape == (4, 8)
+      #     in_shardings=(P('z', 'y'), P('y', None)),
+      #     out_shardings=P('z', 'y'))(a, b)
+    assert c.addressable_data(0).shape == (4, 8)
 
   ##########################################################################
 
@@ -210,7 +210,7 @@ class ShardMapTest(absltest.TestCase):
 
     mesh, a, b = create_inputs(P('z', 'y'), P('y', None))
 
-    assert a.device_buffers[0].shape == (4, 4)
+    assert a.addressable_data(0).shape == (4, 4)
 
     def matmul_reduce_scatter(a, b):
       c = jnp.matmul(a, b)  # [B.z, F] {y.unreduced}
@@ -229,9 +229,9 @@ class ShardMapTest(absltest.TestCase):
       c = jax.jit(fwd)(a, b)
       # c = pjit(
       #     fwd,
-      #     in_axis_resources=(P('z', 'y'), P('y', None)),
-      #     out_axis_resources=P(('z', 'y'), None))(a, b)
-    assert c.device_buffers[0].shape == (2, 8)
+      #     in_shardings=(P('z', 'y'), P('y', None)),
+      #     out_shardings=P(('z', 'y'), None))(a, b)
+    assert c.addressable_data(0).shape == (2, 8)
 
   ##########################################################################
 
@@ -263,8 +263,8 @@ class ShardMapTest(absltest.TestCase):
       c = jax.jit(fwd)(a)
       # c = pjit(
       #     fwd,
-      #     in_axis_resources=(P('x', None),),
-      #     out_axis_resources=P('x', None))(a)
+      #     in_shardings=(P('x', None),),
+      #     out_shardings=P('x', None))(a)
     assert (c[1, :] == a[0, :]).all()
 
   ##########################################################################
@@ -299,8 +299,8 @@ class ShardMapTest(absltest.TestCase):
       _, _ = jax.jit(grad)(a)
       # c = pjit(
       #     fwd,
-      #     in_axis_resources=(P('x', None),),
-      #     out_axis_resources=P(None, 'x'))(a)
+      #     in_shardings=(P('x', None),),
+      #     out_shardings=P(None, 'x'))(a)
 
     assert (c == jnp.reshape(a.T, (1, 64))).all()
 
@@ -480,8 +480,8 @@ class ShardMapTest(absltest.TestCase):
 
       _, _ = jax.jit(jax.value_and_grad(loss))(layer, x, [])
       # z = pjit(wrapped_shardmap,
-      #          in_axis_resources=(x_sharding, layer_sharding),
-      #          out_axis_resources=x_sharding)(x, layer)
+      #          in_shardings=(x_sharding, layer_sharding),
+      #          out_shardings=x_sharding)(x, layer)
 
     return z
 

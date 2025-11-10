@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,8 +43,8 @@ import numpy as np
 import six
 from six.moves import map
 from six.moves import range
-from rouge import scoring
-from rouge import tokenizers
+from rouge_score import scoring
+from rouge_score import tokenizers
 
 
 class RougeScorer(scoring.BaseScorer):
@@ -81,7 +81,7 @@ class RougeScorer(scoring.BaseScorer):
       self._tokenizer = tokenizer
     else:
       self._tokenizer = tokenizers.DefaultTokenizer(use_stemmer)
-      logging.info("Using default tokenizer.")
+      logging.debug("Using default tokenizer.")
 
     self._split_summaries = split_summaries
 

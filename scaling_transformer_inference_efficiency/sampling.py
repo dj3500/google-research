@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,8 +33,8 @@ from scaling_transformer_inference_efficiency import partitioning
 @struct.dataclass
 class SamplingHyperParams:
   temperature: Any
-  top_k: Optional[Any] = 4
-  top_p: Optional[Any] = 0.95
+  top_k: Optional[Any] = struct.field(pytree_node=False, default=None)
+  top_p: Optional[Any] = struct.field(pytree_node=False, default=None)
 
   @classmethod
   def physical_axes(cls):
@@ -66,6 +66,11 @@ def sample(
   )
   # logits = binary_search.topp_mask(logits, hyper_params.top_p, -1e10)
 
+  if hyper_params.top_k is not None:
+    logits, top_k_indices = lax.approx_max_k(
+        logits, hyper_params.top_k, recall_target=1.0
+    )
+
   def sample_nonzero():
     # jax.random.categorical expects just one rng. We use vmap to extend it to
     # support a batch of rngs.
@@ -82,7 +87,18 @@ def sample(
   # To avoid numerical instability when dividing by very small temperatures,
   # we sample deterministically (greedily) when the temperature is
   # sufficiently close to zero.
-  return lax.cond(hyper_params.temperature > 1e-4, sample_nonzero, sample_zero)
+  sampled_logits = lax.cond(
+      hyper_params.temperature > 1e-4, sample_nonzero, sample_zero
+  )
+
+  if hyper_params.top_k is not None:
+    sampled_logits = jax.vmap(lambda indices, sampled: indices[sampled])(
+        top_k_indices, sampled_logits  # pylint: disable=undefined-variable
+    )
+
+  return partitioning._with_sharding_constraint(
+      sampled_logits, P('logit_batch')
+  )
 
 
 def sample_manual(

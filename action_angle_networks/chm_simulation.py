@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ def generate_canonical_coordinates(
   }
   normal_mode_trajectories = generate_canonical_coordinates_for_normal_mode(
       t, normal_mode_simulation_parameters)
-  trajectories = jax.tree_map(lambda arr: eigvecs @ arr,
+  trajectories = jax.tree.map(lambda arr: eigvecs @ arr,
                               normal_mode_trajectories)
   positions, momentums = trajectories
   # Scale momentums by mass here.
@@ -133,7 +133,7 @@ def plot_coordinates(positions, momentums,
   q_max = np.max(np.abs(qs))
   p_max = np.max(np.abs(ps))
   p_scale = (q_max / p_max) / 5
-  hs = jax.vmap(
+  hs = jax.vmap(  # pytype: disable=wrong-arg-types  # numpy-scalars
       compute_hamiltonian, in_axes=(0, 0, None))(qs, ps, simulation_parameters)
   hs_formatted = np.round(hs.squeeze(), 5)
 
@@ -238,7 +238,7 @@ def plot_coordinates_in_phase_space(
   num_steps = qs.shape[0]
   q_max = np.max(np.abs(qs))
   p_max = np.max(np.abs(ps))
-  hs = jax.vmap(
+  hs = jax.vmap(  # pytype: disable=wrong-arg-types  # numpy-scalars
       compute_hamiltonian, in_axes=(0, 0, None))(qs, ps, simulation_parameters)
   hs_formatted = np.round(hs.squeeze(), 5)
 

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,8 +36,6 @@ from scaling_transformer_inference_efficiency.layers import one_d_parallel_xmap
 from scaling_transformer_inference_efficiency.layers import two_d_parallel_xmap
 from scaling_transformer_inference_efficiency.sampling import SamplingHyperParams
 
-
-jax.config.update("jax_array", True)  # required for jax < 0.4.0
 
 h = checkpoint.HParams(
     layers=4, embed=16, ff=32, heads=16, qkv=4, max_len=256, vocab=1024
@@ -265,7 +263,7 @@ def xmap_pjit_equivalency(
   prefill_fn = the_model_manual.instantiate_prefill_fn()
   # prompt_result2 = the_model_manual.prefill(params, prefill_fn, [], prompt)
   generate_fn = the_model_manual.instantiate_generating_fn(steps=steps)
-  # print(jax.tree_map(jnp.shape, prompt_result2))
+  # print(jax.tree.map(jnp.shape, prompt_result2))
   # samples2, _ = jax.jit(the_model_manual.generate).lower(
   #     params, generate_fn, [prompt_result], sample_ids,
   # )
@@ -274,7 +272,9 @@ def xmap_pjit_equivalency(
     prev_chunk_next_token_logits = prefix[-1].next_token_logits
     cache = [p.kv_cache for p in prefix]
 
-    samples2, _ = jax.experimental.pjit.pjit(generate_fn)(
+    samples2, _ = jax.experimental.pjit.pjit(
+        generate_fn, static_argnames=("sample_params",)
+    )(
         params=params,
         prefix=cache,
         prev_chunk_next_token_logits=prev_chunk_next_token_logits,
@@ -370,7 +370,7 @@ def switch_sharding_patterns(
   prefill_fn = prefill_model.instantiate_prefill_fn()
   prompt_result2 = prefill_model.prefill(params, prefill_fn, [], prompt)
   generate_fn = generate_model.instantiate_generating_fn(steps=steps)
-  # print(jax.tree_map(jnp.shape, prompt_result2))
+  # print(jax.tree.map(jnp.shape, prompt_result2))
   samples2, _ = generate_model.generate(
       params,
       generate_fn,
@@ -451,7 +451,9 @@ def circular_buffer_equivalency(
             circular=True,
         )
     )
-    loop_fn = jax.jit(the_model.sample_infer_write, static_argnames=("model",))
+    loop_fn = jax.jit(
+        the_model.sample_infer_write, static_argnames=("model", "sample_params")
+    )
 
     # Go from the middle back around
     for i in range(steps // 2, steps + steps // 2):

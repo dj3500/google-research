@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2022 The Google Research Authors.
+#!/bin/bash
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,6 +27,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/bin/bash
+
 CUDA_VISIBLE_DEVICES=0 python3 run_koopman.py --seed=1 --dataset="mini" --data_dir="data/sample_data/" --hidden_dim=64 --num_layers=3 --latent_dim=32 --learning_rate=0.005 --batch_size=16 --num_sins=10 --transformer_dim=64 & 
 wait

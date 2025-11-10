@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,10 +16,9 @@
 """Utility functions for operations on Model."""
 import os.path
 import tempfile
-from typing import Sequence, Optional, List
-from keras import models as models_utils
-from keras.engine import functional
+from typing import List, Optional, Sequence
 import numpy as np
+import tensorflow as tf
 from kws_streaming.layers import modes
 from kws_streaming.layers import quantize
 from kws_streaming.layers.compat import tf
@@ -28,6 +27,9 @@ from kws_streaming.models import model_flags
 from kws_streaming.models import model_params
 from kws_streaming.models import model_utils
 from kws_streaming.models import models as kws_models
+
+models_utils = tf._keras_internal.models  # pylint: disable=protected-access
+functional = tf._keras_internal.engine.functional  # pylint: disable=protected-access
 
 
 def save_model_summary(model, path, file_name='model_summary.txt'):
@@ -38,7 +40,7 @@ def save_model_summary(model, path, file_name='model_summary.txt'):
     path: path where to store model summary
     file_name: model summary file name
   """
-  with open(os.path.join(path, file_name), 'wt') as fd:
+  with tf.io.gfile.GFile(os.path.join(path, file_name), 'w') as fd:
     stringlist = []
     model.summary(print_fn=lambda x: stringlist.append(x))  # pylint: disable=unnecessary-lambda
     model_summary = '\n'.join(stringlist)
@@ -99,17 +101,22 @@ def _clone_model(model, input_tensors):
       newly_created_input_layer = input_tensor._keras_history.layer
       new_input_layers[original_input_layer] = newly_created_input_layer
 
-  model_config, created_layers = models_utils._clone_layers_and_model_config(
-      model, new_input_layers, models_utils._clone_layer)
+  model_config, created_layers = tf._keras_internal.models._clone_layers_and_model_config(  # pylint:disable=protected-access,line-too-long
+      model, new_input_layers, tf._keras_internal.models._clone_layer)
   # pylint: enable=protected-access
 
   # Reconstruct model from the config, using the cloned layers.
   input_tensors, output_tensors, created_layers = (
-      functional.reconstruct_from_config(
+      tf._keras_internal.engine.functional.reconstruct_from_config(  # pylint:disable=protected-access
           model_config, created_layers=created_layers))
 
   new_model = tf.keras.Model(input_tensors, output_tensors, name=model.name)
   return new_model
+
+
+def _weight_get_basename(weight):
+  pos = weight.name.rfind('/')
+  return weight.name if pos == -1 else weight.name[pos + 1 :]
 
 
 def _copy_weights(new_model, model):
@@ -118,10 +125,11 @@ def _copy_weights(new_model, model):
   def _same_weights(weight, new_weight):
     # Check that weights are the same
     # Note that states should be marked as non trainable
-    return (weight.trainable == new_weight.trainable and
-            weight.shape == new_weight.shape and
-            weight.name[weight.name.rfind('/'):None] ==
-            new_weight.name[new_weight.name.rfind('/'):None])
+    return (
+        weight.trainable == new_weight.trainable
+        and weight.shape == new_weight.shape
+        and _weight_get_basename(weight) == _weight_get_basename(new_weight)
+    )
 
   if len(new_model.layers) != len(model.layers):
     raise ValueError(
@@ -207,11 +215,11 @@ def get_stride(model):
 
 
 def convert_to_inference_model(model, input_tensors, mode):
-  """Convert functional `Model` instance to a streaming inference.
+  """Convert tf._keras_internal.engine.functional `Model` instance to a streaming inference.
 
   It will create a new model with new inputs: input_tensors.
   All weights will be copied. Internal states for streaming mode will be created
-  Only functional Keras model is supported!
+  Only tf._keras_internal.engine.functional Keras model is supported!
 
   Args:
       model: Instance of `Model`.
@@ -297,16 +305,28 @@ def to_streaming_inference(model_non_stream, flags, mode):
 
   if (isinstance(model_non_stream.input, (tuple, list)) and
       len(model_non_stream.input) > 1):
-    if len(model_non_stream.input) > 2:
-      raise ValueError(
-          'Maximum number of inputs supported is 2 (input_audio and '
-          'cond_features), but got %d inputs' % len(model_non_stream.input))
     input_tensors.append(
         tf.keras.layers.Input(
             shape=flags.cond_shape,
             batch_size=1,
             dtype=model_non_stream.input[1].dtype,
             name='cond_features'))
+    if len(model_non_stream.input) > 2:
+      # Optionally allows a third input called cond_audio, the shape of which is
+      # recorded in flags.cond_audio_shape.
+      input_tensors.append(
+          tf.keras.layers.Input(
+              shape=flags.cond_audio_shape,
+              batch_size=1,
+              dtype=model_non_stream.input[2].dtype,
+              name='cond_audio',
+          )
+      )
+    if len(model_non_stream.input) > 3:
+      raise ValueError(
+          'Maximum number of inputs supported is 3 (input_audio, cond_features,'
+          ' and cond_audio), but got %d inputs' % len(model_non_stream.input)
+      )
 
   quantize_stream_scope = quantize.quantize_scope()
   with quantize_stream_scope:
@@ -420,6 +440,15 @@ def model_to_tflite(
   if optimizations:
     converter.optimizations = optimizations
     if use_fp16:
+      # TODO(b/296126422): Gracefully handle float16 in quantize
+      # variables pass in the converter. We currently silently fail
+      # if float16 quantization is requested with the
+      # '_experimental_variable_quantization' set to true.
+      # Once the linked bug is fixed, we can remove the setting of
+      # '_experimental_variable_quantization' below.
+      # pylint: disable=protected-access
+      converter._experimental_variable_quantization = False
+      # pylint: enable=protected-access
       converter.target_spec.supported_types = [tf.float16]
       # pylint: disable=protected-access
       converter.target_spec._experimental_supported_accumulation_type = (
@@ -439,7 +468,21 @@ def remove_model_zero_bias(
     model_stream,
     zero_bias_reduction_steps,
 ):
-  """Removes bias from model by subtracting its output on zero input."""
+  """Removes bias from model by subtracting its output on zero input.
+
+  Important: the function supports only STREAM_INTERNAL_STATE_INFERENCE mode
+  since it uses eager execution for model conversion.
+  STREAM_EXTERNAL_STATE_INFERENCE is currently not supported because the
+  conversion done in a graph mode.
+
+  Args:
+    model_stream: Keras model prepared for streaming inference.
+    zero_bias_reduction_steps: Number of steps to collect bias statistics on
+      zero input.
+
+  Returns:
+    Keras model with subtracted from the output zero bias.
+  """
   input_tensors = [np.zeros(inp.shape) for inp in model_stream.inputs]
   temp_model_stream = tf.keras.models.clone_model(model_stream)
   temp_model_stream.set_weights(model_stream.get_weights())
@@ -447,7 +490,7 @@ def remove_model_zero_bias(
     temp_model_stream(input_tensors, training=False)
   bias = temp_model_stream(input_tensors, training=False)
   del temp_model_stream
-  if isinstance(bias, list):
+  if not isinstance(bias, list):
     bias = [bias]
   new_outputs = [
       out - tf.constant(b) for out, b in zip(model_stream.outputs, bias)
@@ -535,7 +578,7 @@ def traverse_graph(prev_layer, layers):
 
 
 def sequential_to_functional(model):
-  """Converts keras sequential model to functional one."""
+  """Converts keras sequential model to tf._keras_internal.engine.functional one."""
   input_layer = tf.keras.Input(
       batch_input_shape=model.layers[0].input_shape[0])
   prev_layer = input_layer
@@ -592,10 +635,20 @@ def ds_tc_resnet_model_params(use_tf_fft=False):
   frames_per_call = total_stride
   frames_number = (frames_number // frames_per_call) * frames_per_call
   # number of input audio samples required to produce one output frame
+  if params.window_stride_samples is None:
+    raise ValueError(
+        'params.window_stride_samples is None in generating parameters for'
+        ' ds_tc_resnet model.'
+    )
+  if params.window_size_samples is None:
+    raise ValueError(
+        'params.window_size_samples is None in generating parameters for'
+        ' ds_tc_resnet model.'
+    )
   framing_stride = max(
       params.window_stride_samples,
-      max(0, params.window_size_samples -
-          params.window_stride_samples))
+      max(0, params.window_size_samples - params.window_stride_samples),
+  )
   signal_size = framing_stride * frames_number
 
   # desired number of samples in the input data to train non streaming model

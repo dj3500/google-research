@@ -1,4 +1,4 @@
-// Copyright 2022 The Google Research Authors.
+// Copyright 2025 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -132,48 +132,60 @@ class AntheaDocSys {
    * array.
    *
    * Both source-segment and target-segment can together
-   * be empty (but not just one of the two), indicating a paragraph break.
+   * be empty to indicate a paragraph break.
    * For convenience, a completely blank line (without the tabs
    * and without document-name and system-name) can also be used to indicate
    * a paragraph break.
    *
-   * Lines beginning with # (without any leading spaces) are treated as comment
-   * lines. They are ignored. If you have actual source text that begins with #,
-   * please prepend a space to it in the file.
+   * This function also unescapes any tabs ('\\t' -> '\t') and newlines
+   * ('\\n' -> '\n') in source-segment/target-segment.
    *
    * The first line should contain a JSON object with the source and the target
-   * language codes. For instance:
-   *   {"source-language": "en", "target-langauge": "fr"}
+   * language codes, and potentially other parameters. For instance:
+   *   {"source_language": "en", "target_language": "fr"}
    *
    * @param {string} projectFileContents TSV-formatted text data.
    * @return {!Array<!AntheaDocSys>} An array of parsed AntheaDocSys objects.
+   *   The parsed parameters from the first line as included as the
+   *   "parameters" property of this array.
    */
   static parseProjectFileContents(projectFileContents) {
     const parsed = [];
     const lines = projectFileContents.split('\n');
-    let metadata = {};
+    let parameters = {};
     let parsingErr = null;
     try {
-      metadata = JSON.parse(lines[0]);
+      parameters = JSON.parse(lines[0]);
     } catch (err) {
-      metadata = {};
+      parameters = {};
       parsingErr = err;
     }
-    if (!metadata['source-language'] || !metadata['target-language']) {
+    /**
+     * Convert hyphenated (legacy) to underscored property names.
+     */
+    const keys = Object.keys(parameters);
+    for (let key of keys) {
+      const underscored_key = key.replace(/-/g, '_');
+      if (key == underscored_key) {
+        continue;
+      }
+      parameters[underscored_key] = parameters[key];
+      delete parameters[key];
+    }
+    if (!parameters['source_language'] || !parameters['target_language']) {
       throw 'The first line must be a JSON object and contain source and ' +
-          'target language codes with keys "source-language" and ' +
-          '"target-language".' +
+          'target language codes with keys "source_language" and ' +
+          '"target_language".' +
           (parsingErr ? (' Parsing error: ' + parsingErr.toString() +
                          ' — Stack: ' + parsingErr.stack) : '');
     }
-    const srcLang = metadata['source-language'];
-    const tgtLang = metadata['target-language'];
+    const srcLang = parameters['source_language'];
+    const tgtLang = parameters['target_language'];
     let docsys = new AntheaDocSys();
+    const unescaper = (s) => s.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
     for (let line of lines.slice(1)) {
-      if (line.startsWith('#')) {
-        continue;
-      }
-      line = line.trim();
+      // Remove leading and trailing non-tab whitespace.
+      line = line.replace(/^[^\S\t]+|[^\S\t]+$/g, '');
       const parts = line.split('\t', 5);
       if (!line || parts.length == 2) {
         /** The line may be blank or may have just doc+sys */
@@ -186,16 +198,12 @@ class AntheaDocSys {
         console.log('Skipping ill-formed text line: [' + line + ']');
         continue;
       }
-      const srcSegment = parts[0].trim();
-      const tgtSegment = parts[1].trim();
+      /** Note that we do not trim() srcSegment/tgtSegment. */
+      const srcSegment = unescaper(parts[0]);
+      const tgtSegment = unescaper(parts[1]);
       const doc = parts[2].trim() + ':' + srcLang + ':' + tgtLang;
       const sys = parts[3].trim();
       const annotation = parts.length > 4 ? parts[4].trim() : '';
-      if ((!srcSegment || !tgtSegment) && (srcSegment || tgtSegment)) {
-        console.log('Skipping text line: only one of src/tgt is nonempty: [' +
-                    line + ']');
-        continue;
-      }
       if (!doc || !sys) {
         console.log('Skipping text line with empty doc/sys: [' + line + ']');
         continue;
@@ -215,7 +223,7 @@ class AntheaDocSys {
       docsys.srcSegments.push(srcSegment);
       docsys.tgtSegments.push(tgtSegment);
       docsys.annotations.push(annotation);
-      if (srcSegment) {
+      if (srcSegment || tgtSegment) {
         docsys.numNonBlankSegments++;
       }
     }
@@ -245,9 +253,8 @@ class AntheaDocSys {
     if (parsed.length == 0) {
       throw 'Did not find any properly formatted text lines in file';
     }
-    // Add language codes to the docsys array.
-    parsed.srcLang = srcLang;
-    parsed.tgtLang = tgtLang;
+    /* Add project parameters as a property of the parsed array. */
+    parsed.parameters = parameters;
     return parsed;
   }
 }
@@ -255,35 +262,51 @@ class AntheaDocSys {
 /**
  * The AntheaCursor class keeps track of the current location (the "cursor")
  * during an eval. There is a location on the source side and one on the
- * target side. Each location consists of a segment index and a sentence index
- * within the segment. It further remembers the max sentence index shown
- * within each segment.
+ * target side. Each location consists of a segment index and a para index
+ * within the segment. The para index points to a "subpara", which is a group of
+ * sentences that forms the navigation unit for the rater. It is typically a
+ * paragraph or a part of a paragraph that is not too big. The cursor further
+ * remembers the max para index shown within each segment on each side.
  */
 class AntheaCursor {
   /**
-   * @param {!Array<!Object>} segments Each segment object should contain a 
-   *     "doc" field and arrays "srcSents" and "tgtSents".
+   * @param {!Array<!Object>} segments Each segment object should contain a
+   *     "doc" field and arrays "srcSubparas" and "tgtSubparas".
    * @param {boolean} tgtOnly Set to true for monolingual evals.
    * @param {boolean} tgtFirst Set to true for target-first evals.
+   * @param {boolean} sideBySide Set to true for sideBySide evals.
    * @param {function(number)} segmentDone Called with seg id for each segment.
+   * @param {!Array<number>} presentationOrder Order in which to display docs.
    */
-  constructor(segments, tgtOnly, tgtFirst, segmentDone) {
+  constructor(segments, tgtOnly, tgtFirst, sideBySide, segmentDone,
+              presentationOrder) {
     this.segments = segments;
     console.assert(segments.length > 0, segments.length);
     this.tgtOnly = tgtOnly;
     this.tgtFirst = tgtFirst;
+    this.sideBySide = sideBySide;
+    // numSides = 2 when not SideBySide (src, tgt)
+    // numSides = 3 when is SideBySide  (src, tgt, tgt2)
+    this.numSides = sideBySide ? 3 : 2;
     this.segmentDone_ = segmentDone;
-    this.numSents = [[], []];
-    this.numSentsShown = [[], []];
+    this.numSubparas = Array.from(Array(this.numSides), () => []);
+    this.numSubparasShown = Array.from(Array(this.numSides), () => []);
+    this.presentationOrder = presentationOrder;
+    /** number identifying the current index within presentationOrder. */
+    this.presentationIndex = 0;
     /** Array<number> identifying the starting seg for each doc. */
     this.docSegStarts = [];
     let doc = -1;
+    // Get the number of subparas on each side for each segment.
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i];
-      this.numSents[0].push(segment.srcSents.length);
-      this.numSents[1].push(segment.tgtSents.length);
-      this.numSentsShown[0].push(0);
-      this.numSentsShown[1].push(0);
+      const sideSubparas = [segment.srcSubparas,
+                            segment.tgtSubparas,
+                            segment.tgtSubparas2 || []];
+      for (let j = 0; j < this.numSides; j++) {
+        this.numSubparas[j].push(sideSubparas[j].length);
+        this.numSubparasShown[j].push(0);
+      }
       if (this.docSegStarts.length == 0 || segment.doc != doc) {
         this.docSegStarts.push(i);
         doc = segment.doc;
@@ -292,11 +315,37 @@ class AntheaCursor {
     console.assert(doc == this.docSegStarts.length - 1);
     this.doc = 0;
     this.seg = 0;
-    /** number that is 0 when the current side is src, and 1 when tgt. */
+    /** number that is 0 when the current side is src, and 1 when tgt.
+     * In sideBySide mode, it is 2 when the current side is tgt2.
+     */
     this.side = 0;
-    this.sent = 0;
-    this.startAtTgt = this.tgtOnly || this.tgtFirst;
-    this.goto(0, this.startAtTgt ? 1 : 0, 0);
+    /** number that is the index of the current subpara. */
+    this.para = 0;
+    const firstSeg = this.docSegStarts[this.presentationOrder[0]];
+    this.updateSideOrder(firstSeg);
+    this.goto(firstSeg, this.sideOrder[0], 0);
+  }
+
+  /**
+   * Builds the order in which to display the columns.
+   * Takes as input a segment Idx and uses that to update the sideOrder.
+   * @param {!Array<number>} segmentIdx
+   * @return {!Array<number>}
+   */
+  updateSideOrder(segmentIdx) {
+    /* Define sideOrder for functions next(), prev(), and cycleSides().
+     * Initialize with the target side(s).
+     * Add in the source side depending on the mode only once
+     * Updating only once is achieved by checking sideOrder length.*/
+    this.sideOrder = this.segments[segmentIdx].tgtsOrder;
+    if (this.tgtOnly || this.sideOrder.length >= this.numSides) {
+      return;
+    }
+    if (this.tgtFirst) {
+      this.sideOrder.push(0);
+    } else {
+      this.sideOrder.unshift(0);
+    }
   }
 
   /**
@@ -307,11 +356,25 @@ class AntheaCursor {
     if (this.seg != this.docSegStarts[this.doc]) {
       return false;
     }
-    const startSide = this.startAtTgt ? 1 : 0;
-    if (this.sent != 0 || (this.side != startSide)) {
+    const startSide = this.sideOrder[0];
+    if (this.para != 0 || (this.side != startSide)) {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Returns true if the passed segment has been fully seen.
+   * @param {number} seg
+   * @return {boolean}
+   */
+  segFullySeen(seg) {
+  for (let side of this.sideOrder) {
+    if (this.numSubparasShown[side][seg] < this.numSubparas[side][seg]) {
+      return false;
+    }
+  }
+  return true;
   }
 
   /**
@@ -319,11 +382,14 @@ class AntheaCursor {
    * @return {boolean}
    */
   atDocEnd() {
-    const endSide = (this.tgtFirst && !this.tgtOnly) ? 0 : 1;
+    const endSide = this.sideOrder.at(-1);
     if (this.side != endSide) {
       return false;
     }
-    if (this.sent + 1 != this.numSents[endSide][this.seg]) {
+    if (this.para + 1 != this.numSubparas[endSide][this.seg]) {
+      return false;
+    }
+    if (!this.segFullySeen(this.seg)) {
       return false;
     }
     if (this.seg != this.segments.length - 1 &&
@@ -338,73 +404,74 @@ class AntheaCursor {
    * @return {boolean}
    */
   seenDocEnd() {
-    const endSide = (this.tgtFirst && !this.tgtOnly) ? 0 : 1;
     const endSeg = (this.doc + 1 < this.docSegStarts.length) ?
                    this.docSegStarts[this.doc + 1] - 1 :
                    this.segments.length - 1;
-    const endSent = this.numSents[endSide][endSeg] - 1;
-    return this.numSentsShown[endSide][endSeg] > endSent;
+    return this.segFullySeen(endSeg);
   }
 
   /**
-   * Moves the cursor to the next sentence. Which sentence that next one is
-   * depends on tgtOnly/tgtFirst.
+   * Moves the cursor to the next subpara. If this results in changing sides,
+   * the new side is the next element in this.sideOrder.
    */
   next() {
     if (this.atDocEnd()) {
       return;
     }
-    if (this.sent + 1 < this.numSents[this.side][this.seg]) {
-      this.goto(this.seg, this.side, this.sent + 1);
+    // Check if the current side has unseen subparas.
+    // If yes, stay in the side and return.
+    if (this.para + 1 < this.numSubparas[this.side][this.seg]) {
+      /** Goto: next subpara, same side. */
+      this.goto(this.seg, this.side, this.para + 1);
+      return;
+    }
+    const currSideIdx = this.getCurrSideIdx(this.side);
+    if (currSideIdx + 1 < this.sideOrder.length) {
+      /* currSideIdx is not at the last to-be-visited side,
+       * go to the next side in sideOrder. */
+      const nextSide = this.sideOrder[currSideIdx + 1];
+      const nextSubpara = Math.max(
+          0, this.numSubparasShown[nextSide][this.seg] - 1
+          );
+      this.goto(this.seg, nextSide, nextSubpara);
     } else {
-      if (this.tgtFirst) {
-        if (this.side == 1) {
-          this.goto(this.seg, 0, 0);
-        } else {
-          if (this.seg + 1 < this.segments.length) {
-            this.goto(this.seg + 1, 1, 0);
-          }
-        }
-      } else {
-        if (this.side == 0) {
-          this.goto(this.seg, 1, 0);
-        } else {
-          if (this.seg + 1 < this.segments.length) {
-            this.goto(this.seg + 1, this.tgtOnly ? 1 : 0, 0);
-          }
-        }
+      /* By using Tab to switch sides, it's possible that you
+       * haven't yet seen all of side 0 (src). Check:
+       */
+      if (!this.segFullySeen(this.seg)) {
+        this.cycleSides();
+      } else if (this.seg + 1 < this.segments.length) {
+        /* Goto: start subpara of next seg in the first side in sideOrder. */
+        this.goto(this.seg + 1, this.sideOrder[0], 0);
       }
     }
   }
 
   /**
-   * Moves the cursor to the previous sentence. Which sentence that previous
-   * one is depends on tgtOnly/tgtFirst.
+   * Moves the cursor to the previous subpara. If it results in changing sides,
+   * the new side is the previous element in this.sideOrder.
    */
   prev() {
     if (this.atDocStart()) {
       return;
     }
-    if (this.sent > 0) {
-      this.goto(this.seg, this.side, this.sent - 1);
+    if (this.para > 0) {
+      this.goto(this.seg, this.side, this.para - 1);
+      return;
+    }
+    const currSideIdx = this.getCurrSideIdx(this.side);
+    const nextSideIdx = (
+        currSideIdx + this.sideOrder.length - 1
+        ) % this.sideOrder.length;
+    const nextSide = this.sideOrder[nextSideIdx];
+    if (currSideIdx === 0) {
+      this.goto(this.seg - 1,
+                nextSide,
+                this.numSubparasShown[nextSide][this.seg - 1] - 1);
     } else {
-      if (this.tgtFirst) {
-        if (this.side == 0) {
-          this.goto(this.seg, 1, this.numSents[1][this.seg] - 1);
-        } else {
-          if (this.seg > 0) {
-            this.goto(this.seg - 1, 0, this.numSents[0][this.seg - 1] - 1);
-          }
-        }
-      } else {
-        if (this.side == 1 && !this.tgtOnly) {
-          this.goto(this.seg, 0, this.numSents[0][this.seg] - 1);
-        } else {
-          if (this.seg > 0) {
-            this.goto(this.seg - 1, 1, this.numSents[1][this.seg - 1] - 1);
-          }
-        }
-      }
+      this.goto(this.seg,
+                nextSide,
+                this.numSubparasShown[nextSide][this.seg] - 1);
     }
   }
 
@@ -413,86 +480,127 @@ class AntheaCursor {
    * mode, until the source side of a segment is revealed, this returns false.
    * In tgtOnly mode, this always returns false. If both tgtOnly and tgtFirst
    * are false, then this function always returns true.
-   * 
+   *
    * @param {number} seg
    * @return {boolean}
    */
   srcVisible(seg) {
-    return this.numSentsShown[0][seg] > 0;
+    return this.numSubparasShown[0][seg] > 0;
   }
 
   /**
-   * Makes the cursor jump to the "other" side (src->tgt or tgt->src).
+   * Makes the cursor jump to the next side without going through
+   * all the subparas. The next side is determined by this.sideOrder.
    */
-  switchSides() {
-    if (this.tgtOnly) {
+  cycleSides() {
+    const currSideIdx = this.getCurrSideIdx(this.side);
+    const nextSideIdx = (currSideIdx + 1) % this.sideOrder.length;
+    const nextSide = this.sideOrder[nextSideIdx];
+    /* For tgtFirst, if the target side(s) is/are not fully seen, do not
+     * cycle to the source side. */
+    if (nextSide === 0 && !this.srcVisible(this.seg)) {
       return;
     }
-    if (!this.srcVisible(this.seg)) {
-      return;
-    }
-    const otherSide = 1 - this.side;
-    const otherSent = this.numSentsShown[otherSide][this.seg] - 1;
-    this.goto(this.seg, otherSide, otherSent);
+    const nextSubpara = Math.min(
+        this.numSubparasShown[nextSide][this.seg] - 1,
+        this.para);
+    this.goto(this.seg, nextSide, nextSubpara);
   }
 
   /**
-   * Moves the cursor to the specified segment, side, and sentence.
+   * Returns the index of the current side in the sideOrder array.
+   * @param {number} currSide
+   * @return {number}
+   */
+  getCurrSideIdx(currSide) {
+    return this.sideOrder.indexOf(currSide);
+  }
+
+  /**
+   * Moves the cursor to the specified segment, side, and para.
    * @param {number} seg
    * @param {number} side
-   * @param {number} sent
+   * @param {number} para
    */
-  goto(seg, side, sent) {
+  goto(seg, side, para) {
     console.assert(seg >= 0 && seg < this.segments.length, seg);
     this.seg = seg;
     this.doc = this.segments[seg].doc;
-    console.assert(side == 0 || side == 1, side);
-    console.assert(!this.tgtOnly || side == 1);
+    this.presentationIndex = this.presentationOrder.indexOf(this.doc);
+    console.assert(this.sideOrder.includes(side), side);
     this.side = side;
-    console.assert(sent >= 0 && sent < this.numSents[side][seg], sent);
-    this.sent = sent;
-    for (let s = 0; s < seg; s++) {
-      this.numSentsShown[0][s] = this.numSents[0][s];
-      this.numSentsShown[1][s] = this.numSents[1][s];
+    console.assert(para >= 0 && para < this.numSubparas[side][seg], para);
+    this.para = para;
+    // For each segment from a previously-presented doc, mark all of its
+    // subparas as shown. Also do this for prior segments in the current doc.
+    for (let presIdx = 0; presIdx <= this.presentationIndex; presIdx++) {
+      const presDoc = this.presentationOrder[presIdx];
+      // Last segment for this doc: one before the next doc's first segment, or
+      // the last segment overall.
+      let endSeg = (presDoc + 1 < this.presentationOrder.length) ?
+          this.docSegStarts[presDoc + 1] - 1 :
+          this.segments.length - 1;
+      // For the currently-presented document, only mark up to the current
+      // segment.
+      if (presIdx === this.presentationIndex) {
+        endSeg = Math.min(endSeg, seg);
+      }
+      for (let s = this.docSegStarts[presDoc]; s < endSeg; s++) {
+        for (let i = 0; i < this.numSides; i++) {
+          this.numSubparasShown[i][s] = this.numSubparas[i][s];
+        }
+      }
     }
-    this.numSentsShown[side][seg] = Math.max(
-        this.numSentsShown[side][seg], sent + 1);
+    this.numSubparasShown[side][seg] = Math.max(
+        this.numSubparasShown[side][seg], para + 1);
     if (!this.tgtFirst || side == 0) {
-      /* At least 1 sent is made visible on the other side, if there is one. */
-      const otherSide = 1 - side;
-      this.numSentsShown[otherSide][seg] = Math.max(
-          this.numSentsShown[otherSide][seg], 1);
+      /**
+       * Make at least 1 subpara visible on all sides.
+       */
+      for (let i = 0; i < this.numSides; i++) {
+        this.numSubparasShown[i][seg] = Math.max(
+            this.numSubparasShown[i][seg], 1
+            );
+      }
     }
-    if (this.numSentsShown[1][seg] == this.numSents[1][seg] &&
-        (this.tgtOnly ||
-         (this.numSentsShown[0][seg] == this.numSents[0][seg]))) {
+    this.maybeMarkSegmentDone(seg);
+  }
+
+  /**
+   * If all subparas on all sides have been shown for the specified segment,
+   * then mark the segment as done.
+   * @param {number} seg
+   */
+  maybeMarkSegmentDone(seg) {
+    const sideDone = (s) =>
+        this.numSubparasShown[s][seg] === this.numSubparas[s][seg];
+    if (this.sideOrder.every((s) => sideDone(s))) {
       this.segmentDone_(seg);
     }
   }
 
   /**
    * Returns true if the cursor has been through the specified
-   * segment/side/sentence.
+   * segment/side/para.
    * @param {number} seg
    * @param {number} side
-   * @param {number} sent
+   * @param {number} para
    * @return {boolean}
    */
-  hasBeenRead(seg, side, sent) {
+  hasBeenRead(seg, side, para) {
     return this.segments[seg].doc == this.doc &&
-           this.numSentsShown[side][seg] > sent;
+           this.numSubparasShown[side][seg] > para;
   }
 
   /**
-   * Returns true if the cursor is currently at the specified segment/side/
-   * sentence.
+   * Returns true if the cursor is currently at the specified (seg, side, para).
    * @param {number} seg
    * @param {number} side
-   * @param {number} sent
+   * @param {number} para
    * @return {boolean}
    */
-  equals(seg, side, sent) {
-    return this.seg == seg && this.side == side && this.sent == sent;
+  equals(seg, side, para) {
+    return this.seg == seg && this.side == side && this.para == para;
   }
 
   /**
@@ -501,7 +609,181 @@ class AntheaCursor {
    */
   gotoDoc(doc) {
     console.assert(doc >= 0 && doc < this.docSegStarts.length, doc);
-    this.goto(this.docSegStarts[doc], this.startAtTgt ? 1 : 0, 0);
+    this.updateSideOrder(this.docSegStarts[doc]);
+    this.goto(this.docSegStarts[doc], this.sideOrder[0], 0);
+  }
+}
+
+/**
+ * A class encapsulating one marked error. A marked error is complete once
+ * it has three things set: an error span, a severity, and a type.
+ */
+class AntheaError {
+  constructor() {
+    this.location = 'translation';
+    this.start = -1;
+    this.end = -1;
+    this.severity = '';
+    this.type = '';
+    this.subtype = '';
+    this.prefix = '';
+    this.selected = '';
+    this.metadata = {
+      timestamp: Date.now(),
+      timing: {},
+    };
+  }
+
+  /**
+   * Returns true if this error has its error span start marked.
+   * @return {boolean}
+   */
+  hasSpanStart() {
+    return this.start >= 0;
+  }
+
+  /**
+   * Returns true if this error has its error span end marked.
+   * @return {boolean}
+   */
+  hasSpanEnd() {
+    return this.end >= 0;
+  }
+
+  /**
+   * Returns true if this error has its error span marked.
+   * @return {boolean}
+   */
+  hasSpan() {
+    return this.start >= 0 && this.end >= 0;
+  }
+
+  /**
+   * Returns true if this error has error severity set.
+   * @return {boolean}
+   */
+  hasSeverity() {
+    return this.severity != '';
+  }
+
+  /**
+   * Returns true if this error has error type set.
+   * @return {boolean}
+   */
+  hasType() {
+    return this.type != '';
+  }
+
+  /**
+   * Returns true if this error has all the needed pieces.
+   * @return {boolean}
+   */
+  isComplete() {
+    return this.hasSpan() && this.hasSeverity() && this.hasType();
+  }
+
+  /**
+   * Make an AntheaError from obj, which can be another AntheaError object, or
+   * can be a JSON-decoded dictionary that has some or all the fields in
+   * AntheaError.
+   *
+   * @param {!Object} obj
+   * @return {!AntheaError}
+   */
+  static clone(obj) {
+    const error = new AntheaError;
+    for (const k in obj) {
+      error[k] = obj[k];
+    }
+    error.metadata = {...obj.metadata};
+    return error;
+  }
+
+  /**
+   * Create a new AntheError from a prior error object (taken from a prior
+   * rater's evaluation).
+   *
+   * @param {string} priorRater
+   * @param {!Object} priorError
+   * @return {!AntheaError}
+   */
+  static newFromPriorError(priorRater, priorError) {
+    const error = AntheaError.clone(priorError);
+    error.metadata.timestamp = Date.now();
+    error.metadata.timing = {};
+    error.metadata.prior_rater = priorRater;
+    error.metadata.prior_error = priorError;
+    return error;
+  }
+
+  /**
+   * Add timing events from a timing object to the current error.
+   *
+   * @param {!Object} timing
+   */
+  addTiming(timing) {
+    const myTiming = this.metadata.timing;
+    for (const action in timing) {
+      if (!myTiming.hasOwnProperty(action)) {
+        myTiming[action] = timing[action];
+        continue;
+      }
+      myTiming[action].count += timing[action].count;
+      myTiming[action].timeMS += timing[action].timeMS;
+      myTiming[action].log.push.apply(myTiming[action].log, timing[action].log);
+    }
+  }
+
+  /**
+   * Returns the count of errors (not counting those marked_deleted).
+   *
+   * @param {!Array<!AntheaError>} errors
+   * @return {number}
+   */
+  static count(errors) {
+    let ct = 0;
+    for (const error of errors) {
+      if (!error.marked_deleted) {
+        ct++;
+      }
+    }
+    return ct;
+  }
+}
+
+/**
+ * A seeded random number generator based on C++ std::minstd_rand. Note that
+ * using seed=0 is a special case that results in always returning 0. Because
+ * this class is only used for shuffling (see AntheaEval.pseudoRandomShuffle),
+ * using seed=0 effectively disables shuffling.
+ */
+class AntheaDeterministicRandom {
+  /**
+   * @param {number} seed
+   */
+  constructor(seed) {
+    this.seed_ = seed;
+    this.MULTIPLIER_ = 48271;
+    this.MOD_ = 2147483647;  // 2^31 - 1
+
+    // Some seed values (e.g. 1) can result in the first few random numbers
+    // having low entropy. To avoid this, we skip the first 30.
+    for (let i = 0; i < 30; i++) {
+      this.next();
+    }
+  }
+
+  /**
+   * Generates the next random number in [0, 1).
+   * @return {number}
+   */
+  next() {
+    const candidate_seed = (this.MULTIPLIER_ * this.seed_) % this.MOD_;
+    // If candidate_seed is the wrong sign, add this.MOD_ to wrap it to the
+    // correct sign.
+    this.seed_ = (candidate_seed * this.MOD_ < 0) ? candidate_seed + this.MOD_
+                                                  : candidate_seed;
+    return this.seed_ / this.MOD_;
   }
 }
 
@@ -540,7 +822,7 @@ class AntheaEval {
     this.scriptUrlPrefix_ = scriptUrlPrefix;
 
 
-    /** ?AntheaCursor Which doc/segment/side/sentence we are at. */
+    /** ?AntheaCursor Which doc/segment/side/subpara we are at. */
     this.cursor = null;
 
     /** ?Object */
@@ -548,6 +830,12 @@ class AntheaEval {
 
     /** @private {!Array<!Object>} */
     this.evalResults_ = [];
+
+    /**
+     * @private @const {!Object} Dictionary mapping error index to the div
+     * containing the edit button for that error.
+     */
+    this.modButtonParents_ = {};
 
     /** @private {?Element} */
     this.fadingTextSpan_ = null;
@@ -560,11 +848,22 @@ class AntheaEval {
     this.afterColor_ = 'lightgray';
     /** @private @const {string} */
     this.buttonColor_ = 'azure';
+    /** @private @const {string} */
+    this.highlightColor_ = 'gainsboro';
 
-    /** @private {?Object} The currently marked phrase. */
-    this.markedPhrase_ = null;
-    /** @private {boolean} */
-    this.startedMarking_ = false;
+    /** @private {?AntheaError} Current error getting added or edited. */
+    this.error_ = null;
+    /**
+     * @private {number} When error_ is not null, this is the index of the error
+     *     getting edited (-1 for a new error getting annotated).
+     */
+    this.errorIndex_ = -1;
+    /**
+     * @private {string} Currently active action for the current error.
+     *   Something like 'new-error', 'deletion', etc.
+     */
+    this.errorAction_ = '';
+
     /** @private {?AntheaPhraseMarker} */
     this.phraseMarker_ = null;
     /** @private {?Element} */
@@ -609,6 +908,37 @@ class AntheaEval {
 
     /** function */
     this.resizeListener_ = null;
+
+    /** @private {string} Source language */
+    this.srcLang = '';
+    /** @private {string} Target language */
+    this.tgtLang = '';
+  }
+  /**
+   * Escapes HTML to safely render as text.
+   * @param {string} unescapedHtml
+   * @return {string}
+   */
+  escapeHtml(unescapedHtml) {
+    return unescapedHtml.replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * Shuffles an array using the given pseudo-random number generator.
+   * If the generator always returns the same value, no shuffling occurs.
+   * @param {!Array<!Object>} data
+   * @param {!AntheaDeterministicRandom} pseudoRandNumGenerator
+   * @return {!Array<!Object>}
+   */
+  static pseudoRandomShuffle(data, pseudoRandNumGenerator) {
+    const dataWithRandoms =
+        data.map((x) => ({element: x, random: pseudoRandNumGenerator.next()}));
+    dataWithRandoms.sort((a, b) => a.random - b.random);
+    return dataWithRandoms.map((x) => x.element);
   }
 
   /**
@@ -633,9 +963,11 @@ class AntheaEval {
     if (!this.manager_ || this.READ_ONLY) {
       return;
     }
+    const segStartIdxArray = [];
     /** Save any feedback, for each doc */
     for (let docIdx = 0; docIdx < this.docs_.length; docIdx++) {
       const doc = this.docs_[docIdx];
+      segStartIdxArray.push(doc.startSG);
       const results = this.evalResults_[doc.startSG];
       results.feedback = {};
       const notes = doc.feedbackNotes ? doc.feedbackNotes.innerText.trim() : '';
@@ -648,15 +980,115 @@ class AntheaEval {
         results.feedback.thumbs = 'down';
       }
     }
-    this.manager_.persistActiveResults(this.evalResults_);
+    let evalResults = this.evalResults_;
+    if (this.config.SIDE_BY_SIDE) {
+      // Split the eval results.
+      evalResults = this.splitSideBySideEvalResults(segStartIdxArray, evalResults);
+    }
+    // Remove the location field from hotw_list which was added in for splitting
+    // the eval results in the sideBySide mode.
+    this.removeLocationFromHotw(evalResults);
+    this.manager_.persistActiveResults(evalResults);
+  }
+
+  /**
+   * Retrieves the error subtype information of an error
+   * using the type and subtype information.
+   * @param {!AntheaError} error
+   * @return {!Array<!Object>}
+   */
+  getErrorSubtypeInfo(error) {
+    let errorInfo = this.config.errors[error.type];
+    if (error.subtype &&
+      errorInfo.subtypes && errorInfo.subtypes[error.subtype]) {
+      errorInfo = errorInfo.subtypes[error.subtype];
+    }
+    return errorInfo;
+  }
+
+  /**
+   * Split the eval results for target and target2 in the sideBySide mode.
+   * The number of segments will be doubled after splitting and formatted
+   * as follows:
+   * doc0
+   *    seg0 [srcErrors, tgtErrors (loc = 'translation'), tgtHotw (w/o loc info)]
+   *    seg1 [srcErrors, tgtErrors (loc = 'translation'), tgtHotw (w/o loc info)]
+   * doc1 (source is the same as doc0)
+   *    seg0 [srcErrors, tgt2Errors (loc = 'translation'), tgt2Hotw (w/o loc info)]
+   *    seg1 [srcErrors, tgt2Errors (loc = 'translation'), tgt2Hotw (w/o loc info)]
+   * doc2 (previously doc1) ...
+   * doc3 (source is the same as doc2)
+   * @param {!Array<number>} segStartIdxArray
+   * @param {!Array<!Object>} evalResults
+   * @return {!Array<!Object>}
+   */
+  splitSideBySideEvalResults(segStartIdxArray, evalResults) {
+    const splitEvalResults = [];
+    for (let i = 0; i < segStartIdxArray.length; i++) {
+      const startIdx = segStartIdxArray[i];
+      const endIdx = i + 1 < segStartIdxArray.length ?
+          segStartIdxArray[i + 1] :
+          evalResults.length;
+      // Loop through each doc twice.
+      // 1st time only keep (src, translation, 1) errors.
+      // 2nd time only keep (src, translation2, 2) errors.
+      // number 1 and 2 refer to which_translation_side of omission errors.
+      // Other errors marked on the source side are not affected.
+      const validErrorLists = [
+        ['source', 'translation', 1],
+        ['source', 'translation2', 2]
+      ];
+      for (let j = 0; j < validErrorLists.length; j++) {
+        // Loop through each segment in a doc.
+        for (let s = startIdx; s < endIdx; s++) {
+          const evalResultCopy = JSON.parse(JSON.stringify(evalResults[s]));
+          evalResultCopy.errors = evalResults[s].errors.filter((error) => {
+            // For omission errors, split based on which_translation_side
+            // in the error subtype information.
+            const errorSubtypeInfo = this.getErrorSubtypeInfo(error);
+            if (errorSubtypeInfo &&
+                errorSubtypeInfo.hasOwnProperty('which_translation_side')) {
+              const translationSide = errorSubtypeInfo.which_translation_side;
+              return this.cursor.sideOrder[translationSide] ===
+                  validErrorLists[j][2];
+            }
+            // For other errors, split based on error.location.
+            return validErrorLists[j].includes(error.location);
+          });
+          // Split the hotw_list based on their injection location.
+          evalResultCopy.hotw_list = evalResultCopy.hotw_list.filter(
+              (hotwError) => validErrorLists[j].includes(hotwError.location)
+              );
+          // Change the doc value based on the side which matters for Marot's
+          // error result parsing.
+          evalResultCopy.doc = evalResults[s].doc * 2 + j;
+          // Save the single quality score corresponding to this result.
+          if (this.config.COLLECT_QUALITY_SCORE) {
+            evalResultCopy.quality_scores = [evalResults[s].quality_scores[j]];
+          }
+          splitEvalResults.push(evalResultCopy);
+        }
+      }
+    }
+    // Change the location of translation2 errors back to translation.
+    for (let i = 0; i < splitEvalResults.length; i++) {
+      splitEvalResults[i].errors = splitEvalResults[i].errors.map((error) => {
+        const errorCopy = { ...error };
+        if (errorCopy.location === 'translation2') {
+          errorCopy.location = 'translation';
+        }
+        return errorCopy;
+      });
+    }
+    return splitEvalResults;
   }
 
   /**
    * Restores eval results from the previously persisted value.
-   * 
+   *
    * @param {?Array<!Object>} projectResults
    */
-  restoreResults(projectResults) {
+  restoreEvalResults(projectResults) {
     if (!this.manager_) {
       return;
     }
@@ -669,6 +1101,9 @@ class AntheaEval {
         this.manager_.log(this.manager_.INFO, 'No previous results to restore');
       }
       return;
+    }
+    if (this.config.SIDE_BY_SIDE) {
+      projectResults = this.mergeEvalResults(projectResults);
     }
     if (projectResults.length != this.evalResults_.length) {
       this.manager_.log(
@@ -686,19 +1121,33 @@ class AntheaEval {
     for (let seg = 0; seg < this.evalResults_.length; seg++) {
       const segment = this.segments_[seg];
       const result = this.evalResults_[seg];
+      /** Convert parsed error dicts to AntheaError objects */
+      for (let x = 0; x < result.errors.length; x++) {
+        result.errors[x] = AntheaError.clone(result.errors[x]);
+      }
       if (this.READ_ONLY || result.visited) {
         /** Clear any new HOTW injections in this segment */
-        for (let sent = 0; sent < segment.tgtSents.length; sent++) {
-          const sentence = this.getSentence(seg, 1, sent);
-          delete sentence.hotw;
+        for (let p = 0; p < segment.tgtSubparas.length; p++) {
+          /* Loop through each side of the segment. */
+          for (let side = 1; side < this.cursor.numSides; side ++) {
+            const subpara = this.getSubpara(seg, side, p);
+            delete subpara.hotw;
+            subpara.hotwSpanHTML = '';
+            subpara.hotwError = '';
+            subpara.hotwType = '';
+          }
         }
         const result = this.evalResults_[seg];
         for (let hotw of result.hotw_list || []) {
-          const sent = hotw.sentence_index;
-          const sentence = this.getSentence(seg, 1, sent);
-          sentence.hotw = hotw;
+          const side = (hotw.hasOwnProperty('location') &&
+                        hotw.location !== 'translation') ? 2 : 1;
+          const subpara = this.getSubpara(seg, side, hotw.para);
+          subpara.hotw = hotw;
+          subpara.hotwSpanHTML = hotw.hotw_html;
+          subpara.hotwError = hotw.injected_error;
+          subpara.hotwType = hotw.hotw_type;
         }
-        this.cursor.goto(seg, this.config.TARGET_SIDE_ONLY ? 1 : 0, 0);
+        this.cursor.goto(seg, this.cursor.sideOrder[0], 0);
       } else {
         result.hotw_list = replacedResults[seg].hotw_list;
       }
@@ -728,18 +1177,172 @@ class AntheaEval {
     }
 
     this.docs_[this.cursor.doc].row.style.display = '';
-    this.displayedDocNum_.innerHTML = '' + (this.cursor.doc + 1);
+    this.displayedDocNum_.innerHTML = `${(this.cursor.presentationIndex + 1)}`;
     const docEvalCell = this.docs_[this.cursor.doc].eval;
     docEvalCell.appendChild(this.evalPanel_);
     this.displayedProgress_.innerHTML = this.getPercentEvaluated();
-    this.showPageContextIfPresent();
+    this.showContextAndMediaIfPresent();
     this.redrawAllSegments();
     this.recomputeTops();
-    this.redrawCurrSentence();
-    this.setEvalButtonsAvailability();
+    this.refreshCurrSubpara();
 
     this.manager_.log(this.manager_.INFO,
                       'Restored previous evaluation results');
+  }
+
+  /**
+   * Merge the eval results from the sideBySide mode.
+   * The number of segments will be reduced by half after merging.
+   * The evalResults are formatted as follows:
+   * doc0
+   *    seg0 [srcErrors,
+   *          tgtErrors (loc = 'translation'),
+   *          tgt2Errors (loc = 'translation2'),
+   *          tgtHotw (w/ loc info being 'translation' or 'translation2')]
+   *    ...
+   * doc1 ...
+   *
+   * @param {!Array<!Object>} projectResults
+   * @return {!Array<!Object>}
+   */
+  mergeEvalResults(projectResults) {
+    const mergedEvalResults = [];
+    const segStartIdxArray = this.docs_.map(doc => doc.startSG);
+
+    // Loop through each doc.
+    for (let i = 0; i < segStartIdxArray.length; i++) {
+      const startIdx = segStartIdxArray[i];
+      const endIdx = i + 1 < segStartIdxArray.length ?
+          segStartIdxArray[i + 1] :
+          this.evalResults_.length;
+      const numSegs =  endIdx - startIdx;
+
+      // Loop through each segment in a doc.
+      for (let j = 0; j < numSegs; j++) {
+        const splitOne = projectResults[2*startIdx + j];
+        const splitTwo = projectResults[2*startIdx + numSegs + j];
+        // Change the doc value back to non-doubled one.
+        // See splitSideBySideEvalResults().
+        splitOne.doc = splitOne.doc / 2;
+        splitTwo.doc = (splitTwo.doc - 1) / 2;
+        // Merge the errors.
+        for (let error of splitTwo.errors) {
+          if (error.location === 'source') {
+            // Only add the omission error which is split
+            // based on which_translation_side.
+            const errorSubtypeInfo = this.getErrorSubtypeInfo(error);
+            if (errorSubtypeInfo &&
+                errorSubtypeInfo.hasOwnProperty('which_translation_side')) {
+              splitOne.errors.push(error);
+            }
+          } else {
+            error.location = 'translation2';
+            splitOne.errors.push(error);
+          }
+        }
+        this.addLocationToHotw(splitOne, "translation");
+        this.addLocationToHotw(splitTwo, "translation2");
+        splitOne.hotw_list.push(...splitTwo.hotw_list);
+
+        if (this.config.COLLECT_QUALITY_SCORE) {
+          splitOne.quality_scores = [
+            splitOne.quality_scores[0],
+            splitTwo.quality_scores[0]
+          ];
+        }
+        mergedEvalResults.push(splitOne);
+      }
+    }
+    return mergedEvalResults;
+  }
+
+  /**
+   * Function to add location of injected hotw to the hotw_list when merging.
+   * @param {!Object} splitObject of either translation or translation2.
+   * @param {string} location of the injected hotw.
+   */
+  addLocationToHotw(splitObject, location) {
+      splitObject.hotw_list.forEach((hotwError) => {
+        hotwError.location = location;
+      });
+  }
+
+  /**
+   * Function to remove location of injected hotw from the hotw_list when
+   * sideBySide mode is off.
+   * @param {!Array<!Object>} evalResults
+   */
+  removeLocationFromHotw(evalResults) {
+    for (const evalResult of evalResults) {
+      for (const hotw of evalResult.hotw_list) {
+        delete hotw.location;
+      }
+    }
+  }
+
+  /**
+   * Copies previous evaluation results as the starting point.
+   *
+   * @param {!Array<string>} priorRaters
+   * @param {!Array<!Object>} priorResults
+   */
+  startFromPriorResults(priorRaters, priorResults) {
+    if (!this.manager_ || this.READ_ONLY) {
+      return;
+    }
+    if (!priorResults || priorResults.length == 0) {
+      this.manager_.log(this.manager_.ERROR,
+                        'Cannot start from empty prior eval results');
+      return;
+    }
+    if (!priorRaters || priorRaters.length === 0) {
+      this.manager_.log(
+          this.manager_.ERROR,
+          'Cannot start from prior eval results with empty prior raters');
+      return;
+    }
+    if (priorResults.length != this.evalResults_.length) {
+      this.manager_.log(
+          this.manager_.ERROR,
+          'Cannot start from previous results as they are for ' +
+              priorResults.length +
+              ' segments, but the current project has ' +
+              this.evalResults_.length);
+      return;
+    }
+    if (priorRaters.length !== priorResults.length) {
+      this.manager_.log(
+          this.manager_.ERROR,
+          'Cannot start from previous results: found ' + priorResults.length +
+              ' prior results vs. ' + priorRaters.length + ' prior raters');
+      return;
+    }
+
+    for (let seg = 0; seg < this.evalResults_.length; seg++) {
+      const segment = this.segments_[seg];
+      const result = this.evalResults_[seg];
+      result.prior_rater = priorRaters[seg];
+      const priorResult = priorResults[seg];
+      for (const priorError of priorResult.errors) {
+        const newError = AntheaError.newFromPriorError(priorRaters[seg], priorError);
+        result.errors.push(newError);
+      }
+      if (result.errors.length > 0) {
+        /** Clear any HOTW injections in this segment */
+        for (let p = 0; p < segment.tgtSubparas.length; p++) {
+          for (let side = 1; side < this.cursor.numSides; side++) {
+            const subpara = this.getSubpara(seg, side, p);
+            delete subpara.hotw;
+            subpara.hotwSpanHTML = '';
+            subpara.hotwError = '';
+            subpara.hotwType = '';
+          }
+        }
+        result.hotw_list = [];
+      }
+    }
+    this.manager_.log(this.manager_.INFO,
+                      'Starting from previous evaluation results');
   }
 
   /**
@@ -761,7 +1364,6 @@ class AntheaEval {
     if (!currEval) {
       return;
     }
-    // TODO(vratnakar): maybe append cursor.{side,sent} info to action.
     const timing = currEval.timing;
     if (!timing) {
       return;
@@ -770,28 +1372,53 @@ class AntheaEval {
       timing[action] = {
         count: 0,
         timeMS: 0,
+        /**
+         * This is a log of event details, including timestamps, for
+         * reconstructing the rater behavior fully when needed.
+         */
+        log: [],
       };
     }
     const tinfo = timing[action];
     tinfo.count++;
     currEval.timestamp = Date.now();
     tinfo.timeMS += (currEval.timestamp - this.lastTimestampMS_);
+    const details = {
+      ts: currEval.timestamp,
+      side: this.cursor.side,
+      para: this.cursor.para,
+    };
+    if (!this.cursor.srcVisible(this.cursor.seg)) {
+      details.source_not_seen = true;
+    }
+    tinfo.log.push(details);
     this.lastTimestampMS_ = currEval.timestamp;
     this.saveResults();
   }
 
   /**
-   * Redraws the current sentence.
+   * Note timing for the given action. The action string is saved so that the
+   * subsequent concludeError() call can note the timing for cancelled-<action>
+   * or finished-<action> appropriately.
+   * @param {string} action
    */
-  redrawCurrSentence() {
-    this.redrawSentence(this.cursor.seg, this.cursor.side, this.cursor.sent);
+  initiateErrorAction(action) {
+    this.errorAction_ = action;
+    this.noteTiming('started-' + action);
   }
 
   /**
-   * Redraws the current sentence and refreshes buttons.
+   * Redraws the current subpara.
    */
-  refreshCurrSentence() {
-    this.redrawCurrSentence();
+  redrawCurrSubpara() {
+    this.redrawSubpara(this.cursor.seg, this.cursor.side, this.cursor.para);
+  }
+
+  /**
+   * Redraws the current subpara and refreshes buttons.
+   */
+  refreshCurrSubpara() {
+    this.redrawCurrSubpara();
     this.setEvalButtonsAvailability();
   }
 
@@ -823,128 +1450,364 @@ class AntheaEval {
   }
 
   /**
-   * Returns the sentence object for the specified segment, side, sentence.
+   * Returns the subpara object for the specified segment, side, para.
    * @param {number} seg
    * @param {number} side
-   * @param {number} sent
+   * @param {number} para
    * @return {!Object}
    */
-  getSentence(seg, side, sent) {
+  getSubpara(seg, side, para) {
     const segment = this.segments_[seg];
-    return side == 0 ? segment.srcSents[sent] : segment.tgtSents[sent];
+    if (side === 0) {
+      return segment.srcSubparas[para];
+    } else if (side == 1) {
+      return segment.tgtSubparas[para];
+    } else if (side == 2) {
+      return segment.tgtSubparas2[para];
+    }
   }
 
   /**
-   * Returns the sentence object for the current sentence where the cursor is.
+   * Returns the subpara object for the current subpara where the cursor is.
    * @return {!Object}
    */
-  getCurrSentence() {
-    return this.getSentence(
-        this.cursor.seg, this.cursor.side, this.cursor.sent);
+  getCurrSubpara() {
+    return this.getSubpara(
+        this.cursor.seg, this.cursor.side, this.cursor.para);
   }
 
   /**
-   * Returns the SPAN elements for the current sentence.
+   * Returns the SPAN elements for the current subpara.
    * @return {!HTMLCollection}
    */
   getCurrTokenSpans() {
-    const sentence = this.getCurrSentence();
-    return sentence.sentSpan.getElementsByTagName('span');
+    const subpara = this.getCurrSubpara();
+    return subpara.subparaSpan.getElementsByTagName('span');
   }
 
   /**
-   * Shows the sentence at index seg,side,sent. How the sentence gets shown
+   * Returns the sentence index within the subpara identified by
+   * (seg, side, para) of the token whose index (within all source/target tokens
+   * for the segment) * is tokenIndex.
+   *
+   * @param {number} seg
+   * @param {number} side
+   * @param {number} para
+   * @param {number} tokenIndex The tokenIndex within the whole segment on the
+   *     appropriate side (source/target).
+   * @return {number} The sentence index for the token, in the subpara.
+   */
+  sentenceForToken(seg, side, para, tokenIndex) {
+    const subpara = this.getSubpara(seg, side, para);
+    console.assert(tokenIndex >= subpara.token_offset &&
+                   tokenIndex < subpara.token_offset + subpara.num_tokens,
+                   tokenIndex);
+    let offset = subpara.token_offset;
+    for (let s = 0; s < subpara.sentInfos.length; s++) {
+      const sentInfo = subpara.sentInfos[s];
+      if (tokenIndex < offset + sentInfo.num_tokens) {
+        return s;
+      }
+      offset += sentInfo.num_tokens;
+    }
+    return -1;
+  }
+
+  /**
+   * Returns a set of all sentence indices within the current subpara that
+   * are markable. A sentence is not markable if it already has an error
+   * marked with the property override_all_errors (typical example: a
+   * non-translation error).
+   *
+   * If the optional startSpanIndex parameter is non-negative, then we are
+   * limiting to just the sentence index where the already-started marked span
+   * lies.
+   *
+   * @param {number=} startSpanIndex optional index of the starting span of
+   *     an already begun marking.
+   * @return {!Set} of 0-based indices into the sentInfos in the current
+   *     subpara.
+   */
+  getMarkableSentences(startSpanIndex=-1) {
+    const subpara = this.getCurrSubpara();
+    const evalResult = this.currSegmentEval();
+    const markableSentences = new Set;
+    const numSents = subpara.sentInfos.length;
+    for (let i = 0; i < numSents; i++) {
+      markableSentences.add(i);
+    }
+    const subparaErrorIndices = this.getSubparaErrorIndices(
+        evalResult.errors, this.cursor.seg, this.cursor.side, this.cursor.para);
+    for (let e = 0; e < evalResult.errors.length; e++) {
+      if (!subparaErrorIndices.has(e)) continue;
+      const error = evalResult.errors[e];
+      if (error.marked_deleted) {
+        continue;
+      }
+      const errorInfo = this.config.errors[error.type];
+      if (errorInfo.override_all_errors) {
+        const sent = this.sentenceForToken(
+            this.cursor.seg, this.cursor.side, this.cursor.para, error.start);
+        console.assert(sent >= 0 && sent < numSents, sent);
+        markableSentences.delete(sent);
+      }
+    }
+    if (startSpanIndex >= 0) {
+      const startSent = this.sentenceForToken(
+          this.cursor.seg, this.cursor.side, this.cursor.para,
+          subpara.token_offset + startSpanIndex);
+      console.assert(startSent >= 0 && startSent < numSents);
+      const hasSent = markableSentences.has(startSent);
+      markableSentences.clear();
+      if (hasSent) {
+        markableSentences.add(startSent);
+      }
+    }
+    return markableSentences;
+  }
+
+  /**
+   * Returns a set of all token span indices within the current subpara that
+   * are markable. See the documentation of getMarkableSentences() above for
+   * a description of which tokens are not markable.
+   *
+   * If the optional startSpanIndex parameter is non-negative, then we are
+   * limiting to token span indices within the same sentence.
+   *
+   * @param {number=} startSpanIndex optional index of the starting span of
+   *     an already begun marking.
+   * @return {!Set} of 0-based indices into the token spans in the current
+   *     subpara.
+   */
+  getMarkableSpanIndices(startSpanIndex=-1) {
+    const subpara = this.getCurrSubpara();
+    const markableSentences = this.getMarkableSentences(startSpanIndex);
+    const markableSpans = new Set;
+    let offset = 0;
+    for (let s = 0; s < subpara.sentInfos.length; s++) {
+      const sentInfo = subpara.sentInfos[s];
+      if (markableSentences.has(s)) {
+        for (let i = 0; i < sentInfo.num_tokens; i++) {
+          markableSpans.add(offset + i);
+        }
+      }
+      offset += sentInfo.num_tokens;
+    }
+    return markableSpans;
+  }
+
+  /**
+   * Returns the range [start, end] of token indices (within the whole segment)
+   * of the sentence to which the given tokenIndex belongs.
+   * @param {number} seg
+   * @param {number} side
+   * @param {number} para
+   * @param {number} tokenIndex The tokenIndex within the whole segment.
+   * @return {!Array<number>} The range of tokens for the sentence in which
+   *     tokenIndex falls.
+   */
+  sentenceTokensRange(seg, side, para, tokenIndex) {
+    const subpara = this.getSubpara(seg, side, para);
+    console.assert(tokenIndex >= subpara.token_offset &&
+                   tokenIndex < subpara.token_offset + subpara.num_tokens,
+                   tokenIndex, subpara);
+    let offset = subpara.token_offset;
+    for (const sentInfo of subpara.sentInfos) {
+      if (tokenIndex < offset + sentInfo.num_tokens) {
+        return [offset, offset + sentInfo.num_tokens - 1];
+      }
+      offset += sentInfo.num_tokens;
+    }
+    return [-1, -1];
+  }
+
+  /**
+   * Returns indices into the errors array that contain errors for the given
+   * seg, side, para, and optionally sentence containing a tokenIndex.
+   * If tokenIndex is negative, then error indices for all sentences in the
+   * subpara are returned.
+   * The indices are returned as a Set.
+   *
+   * @param {!Array<!AntheaError>} errors
+   * @param {number} seg
+   * @param {number} side
+   * @param {number} para
+   * @param {number=} tokenIndex
+   * @return {!Set<number>}
+   */
+  getSubparaErrorIndices(errors, seg, side, para, tokenIndex=-1) {
+    const ret = new Set;
+    const subpara = this.getSubpara(seg, side, para);
+    const tokenRangeInSeg = [subpara.token_offset,
+                             subpara.token_offset + subpara.num_tokens - 1];
+    if (tokenIndex >= 0) {
+      let offset = subpara.token_offset;
+      for (const sentInfo of subpara.sentInfos) {
+        if (tokenIndex < offset + sentInfo.num_tokens) {
+          tokenRangeInSeg[0] = offset;
+          tokenRangeInSeg[1] = offset + sentInfo.num_tokens - 1;
+          break;
+        }
+        offset += sentInfo.num_tokens;
+      }
+    }
+    for (let e = 0; e < errors.length; e++) {
+      const error = errors[e];
+      if (side === 0 && error.location !== 'source') continue;
+      if (side === 1 && error.location !== 'translation') continue;
+      if (side === 2 && error.location !== 'translation2') continue;
+      const range = this.intersectRanges(
+        [error.start, error.end], tokenRangeInSeg);
+      if (!range) continue;
+      ret.add(e);
+    }
+    return ret;
+  }
+
+  /**
+   * Resets the quality score and display for the current segment.
+   */
+  resetQualityScore() {
+    if (this.config.COLLECT_QUALITY_SCORE) {
+      this.currSegmentEval().quality_scores[this.cursor.side - 1] = -1;
+      this.undoProgressForCurrentSegment();
+      this.updateQualityScoreDisplay();
+    }
+  }
+
+  /**
+   * Updates the quality score slider display based on the current segment.
+   */
+  updateQualityScoreDisplay() {
+    if (this.config.COLLECT_QUALITY_SCORE) {
+      if (this.cursor.side === 0) {
+        this.qualityScorePanel_.style.display = 'none';
+      } else {
+        this.qualityScorePanel_.style.display = '';
+        const qualityScore = this.currSegmentEval().quality_scores[this.cursor.side - 1];
+        if (qualityScore >= 0) {
+          this.qualityScoreSlider_.value = qualityScore;
+          this.qualityScoreSlider_.style.setProperty('--slider-thumb-color',
+              'var(--slider-set-thumb-color)');
+          this.qualityScoreText_.innerHTML = qualityScore;
+        } else {
+          this.qualityScoreSlider_.value = 50;
+          this.qualityScoreSlider_.style.setProperty('--slider-thumb-color',
+              'var(--slider-unset-thumb-color)');
+          this.qualityScoreText_.innerHTML = 'Unset';
+        }
+      }
+    }
+  }
+
+  /**
+   * Shows the subpara at index (seg, side, para). How the subpara gets shown
    *     depends on whether it is before, at, or after this.cursor.
    * @param {number} seg
    * @param {number} side
-   * @param {number} sent
+   * @param {number} para
    */
-  redrawSentence(seg, side, sent) {
+  redrawSubpara(seg, side, para) {
     if (!this.inCurrDoc(seg)) {
       return;
     }
 
-    const sentence = this.getSentence(seg, side, sent);
+    const subpara = this.getSubpara(seg, side, para);
 
     /* Get rid of any old highlighting or listeners */
-    if (sentence.clickListener) {
-      sentence.sentSpan.removeEventListener('click', sentence.clickListener);
+    if (subpara.clickListener) {
+      subpara.subparaSpan.removeEventListener('click', subpara.clickListener);
     }
-    sentence.clickListener = null;
+    subpara.clickListener = null;
 
     const evalResult = this.evalResults_[seg];
 
-    let spanHTML = sentence.spanHTML;
-    if (!this.READ_ONLY && sentence.hotw && !sentence.hotw.done) {
-      spanHTML = sentence.hotwSpanHTML;
+    let spanHTML = subpara.spanHTML;
+    if (!this.READ_ONLY && subpara.hotw && !subpara.hotw.done) {
+      spanHTML = subpara.hotwSpanHTML;
     }
-    googdom.setInnerHtml(sentence.sentSpan, spanHTML);
-    sentence.sentSpan.classList.remove('anthea-sentence-nav');
+    googdom.setInnerHtml(subpara.subparaSpan, spanHTML);
+    subpara.subparaSpan.classList.remove('anthea-subpara-nav');
 
-    /* Highlight errors in sentence */
-    const tokenSpans = sentence.sentSpan.getElementsByTagName('span');
-    console.assert(tokenSpans.length ==
-                   sentence.lastToken - sentence.firstToken + 1);
-    const tokenRangeInSeg = [sentence.firstToken, sentence.lastToken];
-    const sentErrorIndices = {};
+    const isCurr = this.cursor.equals(seg, side, para);
+
+    /* Highlight errors in subpara */
+    const tokenSpans = subpara.subparaSpan.getElementsByTagName('span');
+    console.assert(tokenSpans.length == subpara.num_tokens);
+    const subparaErrorIndices = this.getSubparaErrorIndices(evalResult.errors,
+                                                            seg, side, para);
+    const tokenRangeInSeg = [subpara.token_offset,
+                             subpara.token_offset + subpara.num_tokens - 1];
     for (let e = 0; e < evalResult.errors.length; e++) {
+      if (!subparaErrorIndices.has(e)) continue;
       const error = evalResult.errors[e];
-      if (side == 0 && error.location != 'source') continue;
-      if (side == 1 && error.location == 'source') continue;
+      if (error.marked_deleted) {
+        continue;
+      }
+      /** Code to highlight the span in the subpara: */
       const range = this.intersectRanges(
         [error.start, error.end], tokenRangeInSeg);
-      if (!range) continue;
+      const isBeingEdited = isCurr && this.error_ && (this.errorIndex_ == e);
       const severity = this.config.severities[error.severity];
       const color = severity.color;
       for (let x = range[0]; x <= range[1]; x++) {
-        tokenSpans[x - sentence.firstToken].style.backgroundColor = color;
+        const tokenSpan = tokenSpans[x - subpara.token_offset];
+        tokenSpan.style.backgroundColor = color;
+        if (isBeingEdited) {
+          tokenSpan.classList.add('anthea-being-edited');
+        }
       }
-      sentErrorIndices[e] = true;
     }
 
-    const isCurr = this.cursor.equals(seg, side, sent);
     if (isCurr) {
-      sentence.sentSpan.classList.remove('anthea-fading-text');
-      this.evalPanel_.style.top = sentence.top;
+      this.updateQualityScoreDisplay();
+      subpara.subparaSpan.classList.remove('anthea-fading-text');
+      this.evalPanel_.style.top = subpara.top;
       this.evalPanelErrors_.innerHTML = '';
-      if (sentence.hotw && sentence.hotw.done) {
-        this.displayHOTWMessage(sentence.hotw.found,
-                                sentence.hotw.injected_error);
+      if (subpara.hotw && subpara.hotw.done) {
+        this.displayHOTWMessage(subpara.hotw.found,
+                                subpara.hotw.injected_error);
       }
       for (let e = 0; e < evalResult.errors.length; e++) {
-        if (sentErrorIndices[e]) {
-          this.displayError(evalResult.errors, e);
+        if (subparaErrorIndices.has(e)) {
+          if (!this.cursor.srcVisible(this.cursor.seg) &&
+              !evalResult.errors[e].metadata.source_not_seen) {
+            /* This error will be shown only after the source is shown */
+            continue;
+          }
+          this.displayError(evalResult, e);
         }
       }
-      if (this.markedPhrase_) {
-        /* Indices in markedPhrase_ are for sentence, not segment. */
-        const color =
-            this.severity_ ? this.severity_.color : this.markedPhrase_.color;
-        for (let x = this.markedPhrase_.start; x <= this.markedPhrase_.end;
-             x++) {
-          tokenSpans[x].style.backgroundColor = color;
+      if (this.error_ && this.errorIndex_ < 0 && this.error_.hasSpan()) {
+        /* New error still getting annotated */
+        let color = this.highlightColor_;
+        if (this.error_.severity) {
+          const severity = this.config.severities[this.error_.severity];
+          color = severity.color;
+        }
+        for (let x = this.error_.start; x <= this.error_.end; x++) {
+          tokenSpans[x - subpara.token_offset].style.backgroundColor = color;
         }
       }
-      this.noteTiming('visited-or-redrawn');
     }
 
-    const hasBeenRead = this.cursor.hasBeenRead(seg, side, sent);
+    const hasBeenRead = this.cursor.hasBeenRead(seg, side, para);
 
-    if (!isCurr && hasBeenRead && !this.startedMarking_) {
-      // anthea-segment-nav class makes the mouse a pointer on hover.
-      sentence.sentSpan.classList.add('anthea-sentence-nav');
-      sentence.clickListener = () => {
-        this.revisitSentence(seg, side, sent);
+    if (!isCurr && hasBeenRead && !this.error_)  {
+      /* anthea-subpara-nav class makes the mouse a pointer on hover. */
+      subpara.subparaSpan.classList.add('anthea-subpara-nav');
+      subpara.clickListener = () => {
+        this.revisitSubpara(seg, side, para);
       };
-      sentence.sentSpan.addEventListener('click', sentence.clickListener);
+      subpara.subparaSpan.addEventListener('click', subpara.clickListener);
     }
 
     const afterColor = (side == 0 && this.cursor.tgtFirst &&
                         !this.cursor.srcVisible(seg)) ?
                        'transparent' : this.afterColor_;
-    sentence.sentSpan.style.color = isCurr ? this.currColor_ :
+    subpara.subparaSpan.style.color = isCurr ? this.currColor_ :
         (hasBeenRead ? this.beforeColor_ : afterColor);
-    sentence.sentSpan.style.fontWeight = isCurr ? 'bold' : 'normal';
+    subpara.subparaSpan.style.fontWeight = isCurr ? 'bold' : 'normal';
   }
 
   /**
@@ -953,11 +1816,16 @@ class AntheaEval {
   redrawAllSegments() {
     for (let n = 0; n < this.segments_.length; n++) {
       const segment = this.segments_[n];
-      for (let s = 0; s < segment.srcSents.length; s++) {
-        this.redrawSentence(n, 0, s);
+      for (let s = 0; s < segment.srcSubparas.length; s++) {
+        this.redrawSubpara(n, 0, s);
       }
-      for (let t = 0; t < segment.tgtSents.length; t++) {
-        this.redrawSentence(n, 1, t);
+      for (let t = 0; t < segment.tgtSubparas.length; t++) {
+        this.redrawSubpara(n, 1, t);
+      }
+      if (this.config.SIDE_BY_SIDE) {
+        for (let u = 0; u < segment.tgtSubparas2.length; u++) {
+          this.redrawSubpara(n, 2, u);
+        }
       }
     }
     this.setEvalButtonsAvailability();
@@ -994,30 +1862,33 @@ class AntheaEval {
   }
 
   /**
-   * Displays the previously marked error in errors[index], alongside the
-   *     current segment. The displayed error also includes an "x" button
-   *     for deleting it.
-   * @param {!Array<!Object>} errors
+   * Displays the previously marked error in evalResult.errors[index], alongside
+   *     the current segment. The displayed error also includes a hamburger
+   *     menu button for deleting or modifying it.
+   * @param {!Object} evalResult
    * @param {number} index
    */
-  displayError(errors, index) {
+  displayError(evalResult, index) {
+    const errors = evalResult.errors;
     const error = errors[index];
-    const tr = document.createElement('tr');
+    const tr = googdom.createDom('tr', 'anthea-eval-panel-row');
     this.evalPanelErrors_.appendChild(tr);
 
-    const delButton = googdom.createDom(
-        'button', {class: 'anthea-stretchy-button anthea-eval-panel-short'},
-        '×');
-    tr.appendChild(googdom.createDom(
-        'td', 'anthea-eval-panel-nav',
-        googdom.createDom('div', 'anthea-eval-panel-nav', delButton)));
-
-    const severity = this.config.severities[error.severity];
-    let desc = error.display || severity.display;
-    if (error.subtype) {
-      const errorInfo = this.config.errors[error.type] || {};
-      if (errorInfo.subtypes && errorInfo.subtypes[error.subtype]) {
+    let color = this.highlightColor_;
+    let desc = '';
+    if (error.type) {
+      const errorInfo = this.config.errors[error.type];
+      desc = errorInfo.display;
+      if (error.subtype &&
+          errorInfo.subtypes && errorInfo.subtypes[error.subtype]) {
         desc = desc + ': ' + errorInfo.subtypes[error.subtype].display;
+      }
+    }
+    if (error.severity) {
+      const severity = this.config.severities[error.severity];
+      color = severity.color;
+      if (!desc) {
+        desc = severity.display;
       }
     }
     if (error.metadata && error.metadata.note) {
@@ -1025,27 +1896,43 @@ class AntheaEval {
     }
     desc += ': ';
 
+    let textCls = 'anthea-eval-panel-text';
+    if (error.marked_deleted) {
+      textCls += ' anthea-deleted-error';
+    }
+    if (this.error_ && (this.errorIndex_ == index)) {
+      textCls += ' anthea-being-edited';
+    }
+    const lang = error.location == 'source' ? this.srcLang : this.tgtLang;
     /**
      * Use 0-width spaces to ensure leading/trailing spaces get shown.
      */
     tr.appendChild(googdom.createDom(
-        'td', 'anthea-eval-panel-text', desc,
+        'td', {class: textCls}, desc,
         googdom.createDom(
             'span', {
               dir: 'auto',
-              style: 'background-color:' + severity.color,
+              lang: lang,
+              style: 'background-color:' + color,
             },
             '\u200b' + error.selected + '\u200b')));
 
-    delButton.title = 'Delete this error';
+    const modButton = googdom.createDom(
+        'button',
+        {class: 'anthea-stretchy-button anthea-eval-panel-mod'});
+    modButton.innerHTML = '&#9776;';
+    const modButtonParent = googdom.createDom(
+        'div', 'anthea-modifier-menu-parent', modButton);
+    tr.appendChild(googdom.createDom(
+        'td', 'anthea-eval-panel-nav', modButtonParent));
+    this.modButtonParents_[index] = modButtonParent;
+
     if (this.READ_ONLY) {
-      delButton.disabled = true;
+      modButton.disabled = true;
     } else {
-      delButton.addEventListener('click', (e) => {
-        e.preventDefault();
-        errors.splice(index, 1);
-        this.refreshCurrSentence();
-      });
+      modButton.addEventListener(
+          'mouseover', this.showModifierMenu.bind(this, index));
+      modButton.addEventListener('click', this.toggleModifierMenu.bind(this));
     }
   }
 
@@ -1053,8 +1940,12 @@ class AntheaEval {
    * Called from the AntheaPhraseMarker object, this is set when a phrase-start
    *     has been marked.
    */
-  setStartedMarking() {
-    this.startedMarking_ = true;
+  setStartedMarkingSpan() {
+    if (!this.error_) {
+      this.error_ = new AntheaError;
+      this.errorIndex_ = -1;
+      this.initiateErrorAction('new-error');
+    }
     this.setEvalButtonsAvailability();
   }
 
@@ -1067,7 +1958,6 @@ class AntheaEval {
       return;
     }
     this.guidance_.innerHTML = text;
-    this.guidance_.style.display = '';
   }
 
   /**
@@ -1090,18 +1980,37 @@ class AntheaEval {
    */
   setEvalButtonsAvailability() {
     const evalResult = this.currSegmentEval();
+    const subparaErrorIndices = this.getSubparaErrorIndices(
+        evalResult.errors, this.cursor.seg, this.cursor.side, this.cursor.para);
+    const markableSentences = this.getMarkableSentences();
+    const noNewErrors =
+        evalResult.errors && evalResult.errors.length > 0 &&
+        ((this.config.MAX_ERRORS > 0 &&
+          AntheaError.count(evalResult.errors) >= this.config.MAX_ERRORS) ||
+         (markableSentences.size == 0));
     const disableMarking = this.READ_ONLY ||
-        (evalResult.errors && evalResult.errors.length > 0 &&
-         (evalResult.errors[0].override_all_errors ||
-          (this.config.MAX_ERRORS > 0 &&
-           evalResult.errors.length >= this.config.MAX_ERRORS)));
-    const disableSevErr = disableMarking || !this.markedPhrase_;
-    const disableSeverity = disableSevErr || this.severity_;
-    for (let s in this.config.severities) {
+        (this.error_ && this.error_.isComplete()) ||
+        (this.errorIndex_ < 0 && noNewErrors);
+    const disableSevCat = disableMarking ||
+                          !this.error_ || !this.error_.hasSpan();
+    const disableSeverity = disableSevCat ||
+        (this.error_ && this.error_.hasSeverity());
+    let forcedSeverity = '';
+    if (!disableSeverity && this.error_ && this.error_.hasType()) {
+      const errorInfo = this.config.errors[this.error_.type];
+      if (errorInfo.forced_severity) {
+        forcedSeverity = errorInfo.forced_severity;
+      }
+    }
+    for (const s in this.config.severities) {
       this.buttons_[s].disabled = disableSeverity;
+      if (forcedSeverity && s != forcedSeverity) {
+        this.buttons_[s].disabled = true;
+      }
     }
 
-    const disableErrors = disableSevErr || this.errorType_;
+    const disableErrors = disableSevCat ||
+        (this.error_ && this.error_.hasType());
     for (let type in this.config.errors) {
       const errorInfo = this.config.errors[type];
       const errorButton = this.buttons_[this.errorButtonKey(type)];
@@ -1113,12 +2022,8 @@ class AntheaEval {
         if (!errorInfo.source_side_ok && this.cursor.side == 0) {
           errorButton.disabled = true;
         }
-        if (errorInfo.override_all_errors &&
-            this.severityId_ && this.severityId_ != 'major') {
-          errorButton.disabled = true;
-        }
-        if (errorInfo.forced_severity && this.severityId_ &&
-            this.severityId_ != errorInfo.forced_severity) {
+        if (errorInfo.forced_severity && this.error_.severity &&
+            this.error_.severity != errorInfo.forced_severity) {
           errorButton.disabled = true;
         }
         if (errorInfo.needs_source &&
@@ -1142,9 +2047,10 @@ class AntheaEval {
     }
     this.prevButton_.disabled = this.cursor.atDocStart();
     this.nextButton_.disabled = this.cursor.atDocEnd();
-    this.prevDocButton_.style.display = (this.cursor.doc == 0) ? 'none' : '';
+    this.prevDocButton_.style.display =
+        (this.cursor.presentationIndex === 0) ? 'none' : '';
     this.prevDocButton_.disabled = false;
-    if (this.cursor.doc == this.docs_.length - 1) {
+    if (this.cursor.presentationIndex === this.docs_.length - 1) {
       this.nextDocButton_.style.display = 'none';
     } else {
       this.nextDocButton_.style.display = '';
@@ -1152,39 +2058,72 @@ class AntheaEval {
                                      !this.cursor.seenDocEnd();
     }
 
-    this.guidancePanel_.style.backgroundColor =
-        (this.severity_ ? this.severity_.color : 'whitesmoke');
-    this.guidance_.style.display = 'none';
+    for (let e = 0; e < evalResult.errors.length; e++) {
+      if (!subparaErrorIndices.has(e)) continue;
+      const modButtonParent = this.modButtonParents_[e];
+      if (!modButtonParent) continue;
+      const modButton = modButtonParent.firstElementChild ?? null;
+      if (!modButton) continue;
+      modButton.disabled = true;
+      if (this.READ_ONLY) {
+        continue;
+      }
+      const error = evalResult.errors[e];
+      if (error.marked_deleted && noNewErrors) {
+        /* cannot undelete when no more errors are allowed */
+        continue;
+      }
+      if (this.error_) {
+        /* cannot edit an error while another error is getting annotated */
+        continue;
+      }
+      modButton.disabled = false;
+    }
+    this.guidancePanel_.style.backgroundColor = 'whitesmoke';
     this.evalPanelBody_.style.display = 'none';
     this.cancel_.style.display = 'none';
-    this.evalPanelErrors_.style.display = '';
     if (this.READ_ONLY) {
+      this.showGuidance('Read-only mode, no editing possible');
       return;
     }
-    if (!this.startedMarking_) {
-      if (!disableMarking) {
+    if (!this.error_)  {
+      if (noNewErrors) {
+        this.showGuidance('Cannot mark more errors here');
+      } else {
+        this.showGuidance('Click on the start of an error span not yet marked');
         this.phraseMarker_.getMarkedPhrase();
       }
       return;
     }
-
-    // Marking has already been initiated.
-    this.evalPanelBody_.style.display = '';
-    this.cancel_.style.display = '';
-    this.evalPanelErrors_.style.display = 'none';
-
-    if (this.severity_) {
-      this.showGuidance('Choose error type / sybtype');
-    } else if (this.errorType_) {
-      this.showGuidance('Choose error severity');
-    } else {
-      this.showGuidance('Choose error severity, type / subtype');
+    if (this.error_.isComplete()) {
+      return;
     }
+
+    // Already in the middle of editing a new or existing error.
+    this.cancel_.style.display = '';
     this.openSubtypes(null);
     this.prevButton_.disabled = true;
     this.nextButton_.disabled = true;
     this.prevDocButton_.disabled = true;
     this.nextDocButton_.disabled = true;
+
+    if (!this.error_.hasType()) {
+      this.evalPanelBody_.style.display = '';
+    }
+    if (this.error_.hasSeverity() && this.error_.hasType()) {
+      if (!this.phraseMarker_.startAlreadyMarked()) {
+        this.showGuidance('Click on the corrected start of the error span');
+        this.phraseMarker_.getMarkedPhrase();
+      }
+    } else if (this.error_.hasSeverity()) {
+      const severity = this.config.severities[this.error_.severity];
+      this.guidancePanel_.style.backgroundColor = severity.color;
+      this.showGuidance('Choose error type / sybtype');
+    } else if (this.error_.hasType()) {
+      this.showGuidance('Choose error severity');
+    } else {
+      this.showGuidance('Choose error severity, type / subtype');
+    }
   }
 
   /**
@@ -1196,6 +2135,10 @@ class AntheaEval {
     if (this.evalResults_[seg].visited) {
       return;
     }
+    if (this.config.COLLECT_QUALITY_SCORE &&
+        this.evalResults_[seg].quality_scores.some(value => value === -1)) {
+      return;
+    }
     this.evalResults_[seg].visited = true;
     this.saveResults();
     this.numWordsEvaluated_ += this.segments_[seg].numTgtWords;
@@ -1205,20 +2148,38 @@ class AntheaEval {
   }
 
   /**
-   * Called after a sentence should be done with. Returns false in
-   *     the (rare) case that the sentence was a HOTW sentence with
+   * Undoes the progress update for the current segment. This can happen if the
+   * quality score gets reset because of a HOTW error.
+   */
+  undoProgressForCurrentSegment() {
+    const seg = this.cursor.seg;
+    if (!this.evalResults_[seg].visited) {
+      return;
+    }
+    this.evalResults_[seg].visited = false;
+    this.saveResults();
+    this.numWordsEvaluated_ -= this.segments_[seg].numTgtWords;
+    if (this.displayedProgress_) {
+      this.displayedProgress_.innerHTML = this.getPercentEvaluated();
+    }
+  }
+
+  /**
+   * Called after a subpara should be done with. Returns false in
+   *     the (rare) case that the subpara was a HOTW subpara with
    *     injected errors shown, which leads to the end of the HOTW check
-   *     but makes the rater continue to rate the sentence.
+   *     but makes the rater continue to rate the subpara.
    * @return {boolean}
    */
-  finishCurrSentence() {
-    const sentence = this.getCurrSentence();
-    if (!this.READ_ONLY && sentence.hotw && !sentence.hotw.done) {
+  finishCurrSubpara() {
+    const subpara = this.getCurrSubpara();
+    if (!this.READ_ONLY && subpara.hotw && !subpara.hotw.done) {
+      this.resetQualityScore();
       const evalResult = this.currSegmentEval();
       this.noteTiming('missed-hands-on-the-wheel-error');
-      sentence.hotw.done = true;
-      sentence.hotw.timestamp = evalResult.timestamp;
-      sentence.hotw.timing = evalResult.timing;
+      subpara.hotw.done = true;
+      subpara.hotw.timestamp = evalResult.timestamp;
+      subpara.hotw.timing = evalResult.timing;
       evalResult.timing = {};
       this.redrawAllSegments();
       return false;
@@ -1227,48 +2188,51 @@ class AntheaEval {
   }
 
   /**
-   * Moves the current sentence into view, if off-screen.
+   * Moves the current subpara into view, if off-screen.
    */
-  ensureCurrSentVisible() {
-    const sentSpan = this.getCurrSentence().sentSpan;
-    const sentRect = sentSpan.getBoundingClientRect();
-    if (sentRect.top >= 0 && sentRect.bottom < this.viewportHeight_) {
+  ensureCurrSubparaVisible() {
+    const subparaSpan = this.getCurrSubpara().subparaSpan;
+    const subparaRect = subparaSpan.getBoundingClientRect();
+    if (subparaRect.top >= 0 && subparaRect.bottom < this.viewportHeight_) {
       return;
     }
-    sentSpan.scrollIntoView({block: "center"});
+    subparaSpan.scrollIntoView({block: "center"});
   }
 
   /**
    * Navigates to the other side.
    */
   handleSwitch() {
-    if (this.config.TARGET_SIDE_ONLY) {
+    if (this.error_ || this.config.TARGET_SIDE_ONLY) {
       return;
     }
-    this.cursor.switchSides();
+    this.noteTiming('switch-sides');
+    this.cursor.cycleSides();
     this.redrawAllSegments();
-    this.ensureCurrSentVisible();
+    this.ensureCurrSubparaVisible();
   }
 
   /**
-   * Navigates to the previous sentence.
+   * Navigates to the previous subpara.
    */
   handlePrev() {
+    this.noteTiming('back-arrow');
     this.cursor.prev();
     this.redrawAllSegments();
-    this.ensureCurrSentVisible();
+    this.ensureCurrSubparaVisible();
   }
 
   /**
-   * Navigates to the next sentence.
+   * Navigates to the next subpara.
    */
   handleNext() {
-    if (!this.finishCurrSentence()) {
+    this.noteTiming('next-arrow');
+    if (!this.finishCurrSubpara()) {
       return;
     }
     this.cursor.next();
     this.redrawAllSegments();
-    this.ensureCurrSentVisible();
+    this.ensureCurrSubparaVisible();
   }
 
   /**
@@ -1285,111 +2249,95 @@ class AntheaEval {
   }
 
   /**
-   * If the passed error requires additional user input, this function
+   * If the current error requires additional user input, this function
    *     augments it with the needed info. Returns false if the user cancels.
-   * @param {!Object} markedError Object with error details.
    * @return {boolean} Whether to continue with marking the error.
    */
-  maybeAugmentError(markedError) {
-    if (markedError.override_all_errors) {
+  maybeAugmentError() {
+    if (!this.error_) {
+      return false;
+    }
+    const errorInfo = this.config.errors[this.error_.type];
+    if (errorInfo.override_all_errors) {
       if (!confirm(
               'This error category will remove all other marked errors ' +
-              'from this segment and will set the error span to ' +
-              'be the whole segment. Please confirm!')) {
+              'from this sentence and will set the error span to ' +
+              'be the whole sentence. Please confirm!')) {
         this.noteTiming('cancelled-override-all-errors');
         return false;
       }
       this.noteTiming('confirmed-override-all-errors');
-      markedError.location = 'translation';
-      markedError.prefix = '';
+      this.error_.prefix = '';
+      const subpara = this.getCurrSubpara();
+      const range = this.sentenceTokensRange(
+          this.cursor.seg, this.cursor.side, this.cursor.para,
+          this.error_.start);
       const spanArray = this.getCurrTokenSpans();
-      markedError.selected = '';
-      for (let x = 0; x < spanArray.length; x++) {
-        markedError.selected += spanArray[x].innerText;
+      this.error_.selected = '';
+      for (let x = range[0]; x <= range[1]; x++) {
+        this.error_.selected += spanArray[x - subpara.token_offset].innerText;
       }
-      const sentence = this.getCurrSentence();
-      markedError.start = sentence.firstToken;
-      markedError.end = sentence.lastToken;
+      this.error_.start = range[0];
+      this.error_.end = range[1];
     }
 
-    if (!markedError.metadata) {
-      markedError.metadata = {};
-    }
-    markedError.metadata.sentence_index = this.cursor.sent;
+    this.error_.metadata.para = this.cursor.para;
+    this.error_.metadata.side = this.cursor.side;
 
-    if (markedError.needs_note) {
-      markedError.metadata.note = prompt(
+    if (errorInfo.needs_note && !this.error_.metadata.note) {
+      this.error_.metadata.note = prompt(
           "Please enter a short error description", "");
-      if (!markedError.metadata.note) {
-        this.noteTiming('cancelled-error-note');
+      if (!this.error_.metadata.note) {
+        this.noteTiming('cancelled-required-error-note');
         return false;
       }
-      this.noteTiming('added-error-note');
+      this.noteTiming('added-required-error-note');
     }
     return true;
   }
 
   /**
-   * Calling this marks the end of an error-marking in the current segment.
-   * @param {?Object} markedError Object with error details and location,
-   *     or null, if no error is to be marked.
+   * Calling this marks the end of an error-marking or editing in the current
+   *     subpara.
+   * @param {boolean=} cancel
    */
-  concludeMarkingPhrase(markedError) {
-    if (markedError) {
+  concludeError(cancel = false) {
+    let actionPrefix = 'cancelled-';
+    if (!cancel && this.error_ && this.error_.isComplete()) {
       const evalResult = this.currSegmentEval();
-      if (markedError.override_all_errors) {
-        evalResult.errors = [];
+      const errorInfo = this.config.errors[this.error_.type];
+      if (errorInfo.override_all_errors) {
+        const subparaErrorIndices = this.getSubparaErrorIndices(
+            evalResult.errors, this.cursor.seg, this.cursor.side,
+            this.cursor.para, this.error_.start);
+        for (let x = 0; x < evalResult.errors.length; x++) {
+          if (!subparaErrorIndices.has(x) || x == this.errorIndex_) {
+            continue;
+          }
+          evalResult.errors[x].marked_deleted = true;
+        }
       }
-      if (!markedError.metadata) {
-        markedError.metadata = {};
-      }
-      markedError.metadata.timestamp = evalResult.timestamp;
-      markedError.metadata.timing = evalResult.timing;
+      this.error_.metadata.timestamp = evalResult.timestamp;
+      this.error_.addTiming(evalResult.timing);
       if (!this.cursor.srcVisible(this.cursor.seg)) {
-        markedError.metadata.source_not_seen = true;
+        this.error_.metadata.source_not_seen = true;
       }
       evalResult.timing = {};
-      evalResult.errors.push(markedError);
-      this.displayError(evalResult.errors, evalResult.errors.length - 1);
+      if (this.errorIndex_ >= 0) {
+        evalResult.errors[this.errorIndex_] = this.error_;
+      } else {
+        evalResult.errors.push(this.error_);
+      }
+      actionPrefix = 'finished-';
     }
-    this.resetMQMRating();
-
+    if (this.errorAction_) {
+      this.noteTiming(actionPrefix + this.errorAction_);
+    }
     this.saveResults();
+    this.error_ = null;
+    this.errorIndex_ = -1;
+    this.errorAction_ = '';
     this.redrawAllSegments();
-  }
-
-  /**
-   * Marks a "full-span" error that overrides all other errors and bypasses
-   *     phrase selection.
-   */
-  markFullSpanError(severityId) {
-    const severity = this.config.severities[severityId];
-    const error = {
-      severity: severityId,
-      override_all_errors: true,
-      needs_note: severity.full_span_error &&
-                  severity.full_span_error.needs_note ? true : false,
-      metadata: {},
-    };
-    if (!this.maybeAugmentError(error)) {
-      this.concludeMarkingPhrase(null);
-      return;
-    }
-
-    const sentence = this.getCurrSentence();
-    if (sentence.hotw && !sentence.hotw.done) {
-      const evalResult = this.currSegmentEval();
-      this.noteTiming('found-hands-on-the-wheel-error');
-      sentence.hotw.done = true;
-      sentence.hotw.found = true;
-      sentence.hotw.timestamp = evalResult.timestamp;
-      sentence.hotw.timing = evalResult.timing;
-      evalResult.timing = {};
-      this.concludeMarkingPhrase(null);
-      return;
-    }
-
-    this.concludeMarkingPhrase(error);
   }
 
   /**
@@ -1420,15 +2368,46 @@ class AntheaEval {
         'afterbegin', this.guidancePanel_);
 
     this.guidance_ = googdom.createDom('div', 'anthea-eval-guidance');
-    this.guidance_.style.display = 'none';
     this.guidancePanel_.appendChild(this.guidance_);
+
+    if (this.config.COLLECT_QUALITY_SCORE) {
+      this.qualityScoreSlider_ = googdom.createDom('input', {
+        'class': 'anthea-slider',
+        'type': 'range',
+        'min': 0,
+        'max': 100,
+        'value': 50,
+        'onkeydown': 'return false;' // Prevent arrow keys from affecting score.
+      });
+      this.qualityScoreText_ =
+          googdom.createDom('div', 'anthea-quality-score-text', 'Unset');
+      this.qualityScorePanel_ = googdom.createDom(
+          'div', 'anthea-quality-score-panel',
+          'Quality Score: ', this.qualityScoreText_, this.qualityScoreSlider_);
+      const qualityScoreLandmarks = [
+        '0: No meaning preserved', '33: Some meaning preserved',
+        '66: Most meaning preserved, few grammar mistakes',
+        '100: Perfect meaning/grammar'
+      ];
+      qualityScoreLandmarks.forEach(
+          landmark => this.qualityScorePanel_.appendChild(googdom.createDom(
+              'div', 'anthea-quality-score-landmark', landmark)));
+
+      this.guidancePanel_.appendChild(this.qualityScorePanel_);
+      const qualityScoreListener = (e) => {
+        this.currSegmentEval().quality_scores[this.cursor.side - 1] =
+            Number(this.qualityScoreSlider_.value);
+        this.updateQualityScoreDisplay();
+        this.cursor.maybeMarkSegmentDone(this.cursor.seg);
+      };
+      this.qualityScoreSlider_.addEventListener('input', qualityScoreListener);
+  }
 
     this.cancel_ = googdom.createDom(
         'button', 'anthea-stretchy-button anthea-eval-cancel', 'Cancel (Esc)');
     this.cancel_.style.display = 'none';
     const cancelListener = (e) => {
-      if (e.type == 'click' ||
-          (!this.cancel_.disabled && e.key && e.key === 'Escape')) {
+      if (e.type == 'click' || (e.key && e.key === 'Escape')) {
         e.preventDefault();
         this.handleCancel();
       }
@@ -1477,7 +2456,7 @@ class AntheaEval {
           }
           subtypeButton.addEventListener('click', (e) => {
             e.preventDefault();
-            this.setMQMType(type, subtype);
+            this.handleErrorTypeClick(type, subtype);
           });
           this.buttons_[this.errorButtonKey(type, subtype)] = subtypeButton;
           if (!subtypeInfo.hidden) {
@@ -1491,8 +2470,7 @@ class AntheaEval {
         if (this.config.FLATTEN_SUBTYPES) {
           errorButton.style.display = 'none';
         } else {
-          subtypesDiv.className =
-              subtypesDiv.className + ' anthea-eval-panel-unflattened';
+          subtypesDiv.classList.add('anthea-eval-panel-unflattened');
           subtypes.style.display = 'none';
           errorButton.addEventListener('click', (e) => {
             e.preventDefault();
@@ -1502,7 +2480,7 @@ class AntheaEval {
       } else {
         errorButton.addEventListener('click', (e) => {
           e.preventDefault();
-          this.setMQMType(type);
+          this.handleErrorTypeClick(type);
         });
       }
       errorButton.disabled = true;
@@ -1511,55 +2489,20 @@ class AntheaEval {
   }
 
   /**
-   * Resets the current MQM rating.
-   */
-  resetMQMRating() {
-    this.severityId_ = '';
-    this.severity_ = null;
-    this.errorType_ = '';
-    this.errorSubtype_ = '';
-    this.markedPhrase_ = null;
-    this.startedMarking_ = false;
-    this.evalPanelBody_.style.display = 'none';
-  }
-
-  /**
    * Called after any of the three parts of an MQM rating (error span,
-   *     severity, error type) is added, this finishes the rating when
+   *     severity, error type) is added, this finishes the error rating when
    *     all three parts have been received.
    */
-  maybeSetMQMRating() {
-    this.startedMarking_ = true;
-    this.redrawAllSegments();
-    if (!this.severity_ ||
-        (!this.errorType_ && !this.severity_.forced_error) ||
-        !this.markedPhrase_) {
+  maybeConcludeError() {
+    if (!this.error_ || !this.error_.isComplete()) {
+      this.refreshCurrSubpara();
       return;
     }
-    const sentence = this.getCurrSentence();
-    const errorInfo = this.config.errors[this.errorType_] ||
-        this.severity_.forced_error || {};
-    const display =
-        errorInfo.display || this.severity_.display || 'Unspecified';
-    const error = {
-      location: this.cursor.side == 0 ? 'source' : 'translation',
-      prefix: this.markedPhrase_.prefix,
-      selected: this.markedPhrase_.selected,
-      type: this.errorType_,
-      subtype: this.errorSubtype_,
-      display: display,
-      start: this.markedPhrase_.start + sentence.firstToken,
-      end: this.markedPhrase_.end + sentence.firstToken,
-      severity: this.severityId_,
-      override_all_errors: errorInfo.override_all_errors ? true : false,
-      needs_note: errorInfo.needs_note ? true : false,
-      metadata: {},
-    };
-    if (!this.maybeAugmentError(error)) {
-      this.concludeMarkingPhrase(null);
+    if (!this.error_.marked_deleted && !this.maybeAugmentError()) {
+      this.concludeError(true);
       return;
     }
-    this.concludeMarkingPhrase(error);
+    this.concludeError();
   }
 
   /**
@@ -1567,14 +2510,8 @@ class AntheaEval {
    * @param {string} severityId The severity of the error.
    */
   setMQMSeverity(severityId) {
-    this.severityId_ = severityId;
-    this.severity_ = this.config.severities[severityId];
-    this.noteTiming('chose-severity-' + severityId);
-    if (this.markedPhrase_ && this.severity_.forced_error) {
-      this.setMQMType('');
-      return;
-    }
-    this.maybeSetMQMRating();
+    this.error_.severity = severityId;
+    this.maybeConcludeError();
   }
 
   /**
@@ -1583,72 +2520,78 @@ class AntheaEval {
    * @param {string=} subtype
    */
   setMQMType(type, subtype = '') {
-    this.errorType_ = type;
-    this.errorSubtype_ = subtype;
-    this.noteTiming('chose-error-' + type + (subtype ? '-' + subtype : ''));
+    this.error_.type = type;
+    this.error_.subtype = subtype;
     const errorInfo = this.config.errors[type];
-    if (errorInfo.override_all_errors) {
-      this.setMQMSeverity('major');
-      return;
-    }
     if (errorInfo.forced_severity) {
       this.setMQMSeverity(errorInfo.forced_severity);
       return;
     }
-    this.maybeSetMQMRating();
+    this.maybeConcludeError();
   }
 
   /**
    * Sets the MQM error span for the current MQM rating.
-   * @param {!Object} markedPhrase
+   * @param {number} start
+   * @param {number} end
+   * @param {string} prefix
+   * @param {string} selected
    */
-  setMQMPhrase(markedPhrase) {
-    this.markedPhrase_ = markedPhrase;
-    const sentence = this.getCurrSentence();
-    if (sentence.hotw && !sentence.hotw.done) {
+  setMQMSpan(start, end, prefix, selected) {
+    const subpara = this.getCurrSubpara();
+    if (subpara.hotw && !subpara.hotw.done) {
+      this.resetQualityScore();
       const evalResult = this.currSegmentEval();
       this.noteTiming('found-hands-on-the-wheel-error');
-      sentence.hotw.done = true;
-      sentence.hotw.found = true;
-      sentence.hotw.timestamp = evalResult.timestamp;
-      sentence.hotw.timing = evalResult.timing;
+      subpara.hotw.done = true;
+      subpara.hotw.found = true;
+      subpara.hotw.timestamp = evalResult.timestamp;
+      subpara.hotw.timing = evalResult.timing;
       evalResult.timing = {};
-      this.concludeMarkingPhrase(null);
+      this.errorAction_ = '';  /** concludeError() need not call noteTiming() */
+      this.concludeError(true);
       return;
     }
-    this.noteTiming('ended-marking-phrase');
-    if (this.severity_ && this.severity_.forced_error) {
-      this.setMQMType('');
-      return;
-    }
-    this.showGuidance('Choose error type / subtype');
-    this.maybeSetMQMRating();
+    this.error_.start = start + subpara.token_offset;
+    this.error_.end = end + subpara.token_offset;
+    this.error_.location = ['source', 'translation', 'translation2'][this.cursor.side];
+    this.error_.prefix = prefix;
+    this.error_.selected = selected;
+    this.maybeConcludeError();
   }
 
   /**
    * Handles cancellation of the current error-marking.
    */
   handleCancel() {
-    this.noteTiming('cancelled-marking-error');
-    this.concludeMarkingPhrase(null);
+    this.noteTiming('pressed-cancel');
+    if (!this.error_) {
+      return;
+    }
+    this.concludeError(true);
   }
 
   /**
-   * Handles a click on a "<severity>" button.
+   * Handles a click on a "<severity>" button or its hotkey.
    * @param {string} severityId
    */
   handleSeverityClick(severityId) {
     if (this.buttons_[severityId].disabled) {
+      /** We could have come here from a keyboard shortcut. */
       return;
     }
-    const severity = this.config.severities[severityId];
     this.noteTiming('chose-severity-' + severityId);
-    if (severity.full_span_error) {
-      // Just mark the full-span error directly.
-      this.markFullSpanError(severityId);
-    } else {
-      this.setMQMSeverity(severityId);
-    }
+    this.setMQMSeverity(severityId);
+  }
+
+  /**
+   * Handles a click on an error "<type>/<subsubtype>" button.
+   * @param {string} type
+   * @param {string=} subtype
+   */
+  handleErrorTypeClick(type, subtype='') {
+    this.noteTiming('chose-error-' + type + (subtype ? '-' + subtype : ''));
+    this.setMQMType(type, subtype);
   }
 
   /**
@@ -1669,18 +2612,18 @@ class AntheaEval {
    * @param {number} side
    * @param {number} s
    */
-  revisitSentence(n, side, s) {
+  revisitSubpara(n, side, s) {
     if (!this.inCurrDoc(n) ||
         !this.cursor.hasBeenRead(n, side, s) ||
         this.cursor.equals(n, side, s) ||
-        this.startedMarking_) {
+        this.error_)  {
       return;
     }
-    const currSent = this.getCurrSentence();
+    const currSubpara = this.getCurrSubpara();
     this.noteTiming('revisited');
     this.cursor.goto(n, side, s);
     this.redrawAllSegments();
-    this.fadeTextSpan(currSent.sentSpan);
+    this.fadeTextSpan(currSubpara.subparaSpan);
   }
 
   /**
@@ -1694,68 +2637,163 @@ class AntheaEval {
 
   /**
    * If the text is sufficiently long, then this function injects a deliberate
-   *     translation error in some part of the text (currently it reverses a
-   *     long-enough sub-phrase). The returned object includes a "corrupted"
-   *     field that has the corrupted text (empty if no corruption was done),
-   *     and a "display" field suitable for revealing after the corruption is
-   *     undone.
-   * @param {string} text
-   * @return {!Object}
+   * translation error in some part of the text by reversing a long-enough
+   * sub-phrase, within a sentence. See return format in injectHotw()
+   * documentation.
+   * @param {!Array<string>} tokens
+   * @param {!Object} subparaInfo
+   * @param {string} tgtLang
+   * @return {?Object}
    */
-  static injectErrors(text) {
-    const ret = {
-      corrupted: '',
-      display: '',
-    };
+  static injectHotwWordsFlipped(tokens, subparaInfo, tgtLang) {
     /**
-     * "pieces" will be an array of tokens, including text as well as separators
-     * (spaces and 0-width spaces). Error injection is done by reversing a
-     * segment from "pieces" that starts and ends on separators.
+     * Error injection is done by reversing a sequence from tokens that starts
+     * and ends within spaces/punctuation (or any single-char tokens) and is
+     * within a sentence.
      */
-    const pieces = [];
-    let piece = '';
+    const sent = this.getRandomInt(subparaInfo.sentInfos.length);
+    const sentInfo = subparaInfo.sentInfos[sent];
+    const tokenStart = sentInfo.token_offset - subparaInfo.token_offset;
+    const tokenLimit = tokenStart + sentInfo.num_tokens;
     const seps = [];
-    for (let c of text) {
-      if (c == ' ' || c == '\u200b') {
-        if (piece) pieces.push(piece);
-        seps.push(pieces.length);
-        pieces.push(c);
-        piece = '';
-      } else {
-        piece += c;
+    for (let t = tokenStart; t < tokenLimit; t++) {
+      if (tokens[t].length == 1) {
+        seps.push(t);
       }
     }
-    if (piece) pieces.push(piece);
-
     if (seps.length <= 6) {
       // Too short.
-      return ret;
+      return null;
     }
     // Start within the first half.
     const start = this.getRandomInt(seps.length / 2);
     const starti = seps[start];
     const end = Math.min(seps.length - 1, start + 4 + this.getRandomInt(4));
     const endi = seps[end];
-    // Reverse
-    ret.corrupted = pieces.slice(0, starti + 1).join('') +
-      pieces.slice(starti + 1, endi).reverse().join('') +
-      pieces.slice(endi).join('');
-    ret.display = '<span class="anthea-hotw-revealed">' +
-      pieces.slice(starti + 1, endi).reverse().join('') + '</span>';
+    // Reverse tokens in the range (starti, endi)
+    const reversed = tokens.slice(starti + 1, endi).reverse();
+    return {
+      tokens: tokens.slice(0, starti + 1)
+                  .concat(reversed)
+                  .concat(tokens.slice(endi)),
+      hotwError: `<span class="anthea-hotw-revealed" lang="${tgtLang}">` +
+          reversed.join('') + '</span>',
+      hotwType: 'words-flipped',
+    };
+  }
+
+  /**
+   * If the text has a sufficiently long word, then this function injects a
+   * deliberate translation error in some part of the text by reversing a
+   * long-enough sub-string in a word. See return format in injectHotw()
+   * documentation.
+   * @param {!Array<string>} tokens
+   * @param {!Object} subparaInfo
+   * @param {string} tgtLang
+   * @return {?Object}
+   */
+  static injectHotwLettersFlipped(tokens, subparaInfo, tgtLang) {
+    /**
+     * Error injection is done by reversing a long word.
+     */
+    const longTokenIndices = [];
+    const MIN_LETTERS_FLIPPED = 4;
+    const MIN_LETTERS = 5;
+    for (let t = 0; t < tokens.length; t++) {
+      const token = tokens[t];
+      if (token == ' ') {
+        continue;
+      }
+      if (token.length >= MIN_LETTERS) {
+        longTokenIndices.push(t);
+      }
+    }
+
+    if (longTokenIndices.length == 0) {
+      return null;
+    }
+    const index = longTokenIndices[this.getRandomInt(longTokenIndices.length)];
+    const tokenLetters = tokens[index].split('');
+    const offsetLimit = tokenLetters.length - MIN_LETTERS_FLIPPED + 1;
+    const startOffset = this.getRandomInt(offsetLimit);
+    const sliceLengthLimit = tokenLetters.length - startOffset + 1;
+    const sliceLength = MIN_LETTERS_FLIPPED + this.getRandomInt(
+        sliceLengthLimit - MIN_LETTERS_FLIPPED);
+    const rev = tokenLetters.slice(
+        startOffset, startOffset + sliceLength).reverse().join('');
+    if (rev == tokenLetters.slice(
+                   startOffset, startOffset + sliceLength).join('')) {
+      /* We found a palindrome. Give up on this one. */
+      return null;
+    }
+    const ret = {
+      tokens: tokens.slice(),
+      hotwType: 'letters-flipped',
+    };
+    ret.tokens[index] = tokenLetters.slice(0, startOffset).join('') + rev +
+                        tokenLetters.slice(startOffset + sliceLength).join('');
+    ret.hotwError =
+        `<span class="anthea-hotw-revealed" lang="${tgtLang}">` +
+        ret.tokens[index] + '</span>';
     return ret;
   }
 
+  /**
+   * Pretend to inject an HOTW error, but don't actually do it. Only used
+   * for training demos. See return format in injectHotw() documentation.
+   * @param {!Array<string>} tokens
+   * @param {!Object} subparaInfo
+   * @return {?Object}
+   */
+  static injectHotwPretend(tokens, subparaInfo) {
+    return {
+      tokens: tokens.slice(),
+      hotwError: '[Not a real injected error: only a training demo]',
+      hotwType: 'pretend-hotw',
+    };
+  }
+
+  /**
+   * If possible, inject an HOTW error in the tokenized text. The returned
+   * object is null if no injection could be done. Otherwise it is an object
+   * consisting of modified "tokens" (guaranteed to be the same length as the
+   * input "tokens"), and the fields "hotwError" (that is an HTML snippet
+   * that shows the modification clearly) and "hotwType".
+   *
+   * @param {!Array<string>} tokens
+   * @param {!Object} subparaInfo
+   * @param {boolean} hotwPretend Only pretend to insert error, for training.
+   * @param {string} tgtLang The target language, for text direction.
+   * @return {?Object}
+   */
+  static injectHotw(tokens, subparaInfo, hotwPretend, tgtLang) {
+    if (hotwPretend) {
+      return AntheaEval.injectHotwPretend(tokens, subparaInfo);
+    }
+    /* 60% chance for words-flipped, 40% for letter-flipped */
+    const tryWordsFlipped = this.getRandomInt(100) < 60;
+    if (tryWordsFlipped) {
+      const ret =
+          AntheaEval.injectHotwWordsFlipped(tokens, subparaInfo, tgtLang);
+      if (ret) {
+        return ret;
+      }
+    }
+    return AntheaEval.injectHotwLettersFlipped(tokens, subparaInfo, tgtLang);
+  }
 
   /**
    * Tokenizes text, splitting on space and on zero-width space. The zero-width
    * space character is not included in the returned tokens, but space is. Empty
-   * strings are not emitted as tokens.
+   * strings are not emitted as tokens. Consecutive whitespaces are first
+   * normalized to single spaces.
    * @param {string} text
    * @return {!Array<string>}
    */
   static tokenize(text) {
+    const normText = text.replace(/[\s]+/g, ' ');
     let tokens = [];
-    const textParts = text.split(' ');
+    const textParts = normText.split(' ');
     for (let index = 0; index < textParts.length; index++) {
       const part = textParts[index];
       // Segment further by any 0-width space characters present.
@@ -1773,101 +2811,143 @@ class AntheaEval {
   }
 
   /**
-   * Wraps each non-space token in text in a SPAN of class "anthea-word" and
-   * each space in a SPAN of class "anthea-space".
-   * @param {string} text
-   * @param {boolean} appendSpace
-   * @return {{numWords: number, numSpaces: number, spannified: string}}
+   * Wraps each non-space token in text in a SPAN of class "anthea-word"
+   * and each space token in a SPAN of class "anthea-space". Appends a <br>
+   * tag at the ends of sentences that have ends_with_line_break set.
+   * @param {!Array<string>} tokens
+   * @param {!Array<!Object>} sentInfos Each one has num_tokens
+   *     and optionally ends_with_line_break set.
+   * @return {string}
    */
-  static spannifyWords(text, appendSpace) {
-    const ret = {
-      numWords: 0,
-      numSpaces: 0,
-      spannified: '',
-    };
-    const tokens = AntheaEval.tokenize(text);
-    const SEP = '<span class="anthea-space"> </span>';
-    for (let token of tokens) {
-      if (token == ' ') {
-        ret.spannified += SEP;
-        ret.numSpaces++;
-      } else {
-        ret.spannified += '<span class="anthea-word">' + token + '</span>';
-        ret.numWords++;
+  static spannifyTokens(tokens, sentInfos) {
+    let spannified = '';
+    let offset = 0;
+    for (const sentInfo of sentInfos) {
+      for (let i = 0; i < sentInfo.num_tokens; i++) {
+        const token = tokens[offset + i];
+        const cls = (token == ' ') ? 'anthea-space' : 'anthea-word';
+        spannified += `<span class="${cls}">${token}</span>`;
+      }
+      offset += sentInfo.num_tokens;
+      if (sentInfo.ends_with_line_break) {
+        spannified += '<br>';
       }
     }
-    if (appendSpace) {
-      ret.spannified += SEP;
-      ret.numSpaces++;
-    }
-    return ret;
+    return spannified;
   }
 
   /**
    * Splits text into sentences (marked by two zero-width spaces) and tokens
-   * (marked by spaces and zer-width spaces) and creates display-ready HTML
-   * (including possibly adding HOTW errors). Returns an array of sentence-wise
-   * objects. Each object includes the following fields:
-   *   text: The raw text of the sentence.
-   *   spanHTML: The HTML version of the sentence, with tokens wrapped in spans.
+   * (marked by spaces and zero-width spaces), groups them into "subparas",
+   * and creates display-ready HTML (including possibly adding HOTW errors).
+   * Returns an array of subpara-wise objects. Each object includes the
+   * following fields:
+   *   spanHTML: The HTML version of the subpara, with tokens wrapped in spans.
    *   hotwSpanHTML: Empty, or spanHTML variant with HOTW error-injected.
-   *   injectedError: Empty, or the HOTW error.
-   *   numWords: The number of word tokens in the sentence.
-   *   numSPaces: The number of space tokens in the sentence.
-   *   firstToken: The index of the first token (word or space).
-   *   lastToken: The index of the last token (word or space).
+   *   hotwType: Empty, or a description of the injected HOTW error.
+   *   hotwError: Empty, or the HOTW error.
+   *   num_words: number of tokens that are not spaces/line-breaks.
+   *   ends_with_para_break: If the text (before space-normalization) ended in
+   *         two or more newlines, then ends_with_para_break is set to true.
+   *   token_offset: The index of the first token.
+   *   num_tokens: The number of tokens.
+   *   sentInfos[]: Array of sentence-wise objects containing:
+   *       num_tokens
+   *       num_words
+   *       ends_with_line_break
+   *       token_offset
    * In the HTML, each inter-word space is wrapped in a SPAN of class
    * "anthea-space" and each word is wrapped in a SPAN of class "anthea-word".
-   * Adds a trailing space token to the last sentence.
-   * 
+   * Adds a trailing space token to the last subpara unless addEndSpaces
+   * is false or there already is a space there. Sentence endings in line-breaks
+   * get a <br> tag inserted into the HTML.
+   *
    * @param {string} text
+   * @param {boolean} addEndSpaces
+   * @param {number} subparaSentences,
+   * @param {number} subparaTokens,
    * @param {number} hotwPercent
+   * @param {boolean=} hotwPretend
+   * @param {string=} tgtLang
    * @return {!Array<!Object>}
    */
-  static splitAndSpannify(text, hotwPercent) {
-    const sentInfos = [];
+  static splitAndSpannify(text, addEndSpaces,
+                          subparaSentences, subparaTokens,
+                          hotwPercent, hotwPretend=false, tgtLang='') {
     const sentences = text.split('\u200b\u200b');
-    let tokenIndex = 0;
+    const spacesNormalizer = (s) => s.replace(/[\s]+/g, ' ');
+    const sentInfos = [];
+    let totalNumTokens = 0;
     for (let s = 0; s < sentences.length; s++) {
-      const appendSpace = (s == sentences.length - 1);
-      const sentence = sentences[s];
-      const spannifyRet = AntheaEval.spannifyWords(sentence, appendSpace);
-      const spanHTML = spannifyRet.spannified;
-      let hotwSpanHTML = '';
-      let injectedError = '';
-      if (hotwPercent > 0 && (100 * Math.random()) < hotwPercent) {
-        const ret = AntheaEval.injectErrors(sentence);
-        if (ret.corrupted) {
-          const hotwSpannifyRet = AntheaEval.spannifyWords(
-              ret.corrupted, appendSpace);
-          /* Guard against any weird/unlikely change in number of tokens... */
-          if (hotwSpannifyRet.numWords == spannifyRet.numWords &&
-              hotwSpannifyRet.numSpaces == spannifyRet.numSpaces) {
-            /* .. and commit to using this HOTW injected error. */
-            hotwSpanHTML = hotwSpannifyRet.spannified;
-            injectedError = ret.display;
-          }
+      const paraBreak = sentences[s].endsWith('\n\n');
+      const lineBreak = !paraBreak && sentences[s].endsWith('\n');
+      const sentence = spacesNormalizer(sentences[s]);
+      const tokens = AntheaEval.tokenize(sentence);
+      if (addEndSpaces && (s == sentences.length - 1) &&
+          (tokens.length == 0 || tokens[tokens.length - 1] != ' ')) {
+        tokens.push(' ');
+      }
+      let numWords = 0;
+      for (const token of tokens) {
+        if (token != ' ') {
+          numWords++;
         }
       }
-      const sentStartToken = tokenIndex;
-      tokenIndex += spannifyRet.numWords + spannifyRet.numSpaces;
       const sentInfo = {
-        text: sentence,
-        spanHTML: spanHTML,
-        hotwSpanHTML: hotwSpanHTML,
-        injectedError: injectedError,
-        numWords: spannifyRet.numWords,
-        numSpaces: spannifyRet.numSpaces,
-        firstToken: sentStartToken,
-        lastToken: tokenIndex - 1,
+        index: s,
+        num_words: numWords,
+        ends_with_line_break: lineBreak,
+        ends_with_para_break: paraBreak,
+        token_offset: totalNumTokens,
+        num_tokens: tokens.length,
+        tokens: tokens,
       };
+      totalNumTokens += tokens.length;
       sentInfos.push(sentInfo);
     }
-    return sentInfos;
+    const subparas = MarotUtils.makeSubparas(
+        sentInfos, subparaSentences, subparaTokens);
+    const subparaInfos = [];
+    for (const subpara of subparas) {
+      console.assert(subpara.length > 0, subparas);
+      const subparaInfo = {
+        sentInfos: [],
+        ends_with_para_break:
+            sentInfos[subpara[subpara.length - 1]].ends_with_para_break,
+        token_offset: sentInfos[subpara[0]].token_offset,
+        hotwSpanHTML: '',
+        hotwType: '',
+        hotwError: '',
+        num_words: 0,
+        num_tokens: 0,
+      };
+      let tokens = [];
+      for (const s of subpara) {
+        const sentInfo = sentInfos[s];
+        tokens = tokens.concat(sentInfo.tokens);
+        subparaInfo.sentInfos.push(sentInfo);
+        subparaInfo.num_words += sentInfo.num_words;
+      }
+      subparaInfo.num_tokens = tokens.length;
+      subparaInfo.spanHTML = AntheaEval.spannifyTokens(
+          tokens, subparaInfo.sentInfos);
+      if (hotwPercent > 0 && (100 * Math.random()) < hotwPercent) {
+        const hotw =
+            AntheaEval.injectHotw(tokens, subparaInfo, hotwPretend, tgtLang);
+        if (hotw) {
+          subparaInfo.hotwSpanHTML = AntheaEval.spannifyTokens(
+              hotw.tokens, subparaInfo.sentInfos);
+          subparaInfo.hotwType = hotw.hotwType;
+          subparaInfo.hotwError = hotw.hotwError;
+        }
+      }
+      subparaInfos.push(subparaInfo);
+    }
+    return subparaInfos;
   }
 
   /**
-   * Computes the height of the viewport, useful for making sentences visible.
+   * Computes the height of the viewport, useful for making subparas visible.
    */
   setViewportHeight() {
     /** From an iframe do not rely on document.documentElement.clientHeight */
@@ -1880,7 +2960,7 @@ class AntheaEval {
   }
 
   /**
-   * This function recomputes the tops of sentences in the current doc.
+   * This function recomputes the tops of subparas in the current doc.
    */
   recomputeTops() {
     this.setViewportHeight();
@@ -1890,16 +2970,16 @@ class AntheaEval {
     let maxTopPos = 0;
     for (let s = start; s < start + num; s++) {
       const segment = this.segments_[s];
-      const allSents = segment.srcSents.concat(segment.tgtSents);
-      for (let sent of allSents) {
-        const sentRect = sent.sentSpan.getBoundingClientRect();
-        sent.topPos = sentRect.top - docRowRect.top;
-        sent.top = '' + sent.topPos + 'px';
-        maxTopPos = Math.max(sent.topPos, maxTopPos);
+      const allSubparas = segment.srcSubparas.concat(segment.tgtSubparas);
+      for (let subpara of allSubparas) {
+        const subparaRect = subpara.subparaSpan.getBoundingClientRect();
+        subpara.topPos = subparaRect.top - docRowRect.top;
+        subpara.top = '' + subpara.topPos + 'px';
+        maxTopPos = Math.max(subpara.topPos, maxTopPos);
       }
     }
     if (this.evalPanel_) {
-      this.evalPanel_.style.top = this.getCurrSentence().top;
+      this.evalPanel_.style.top = this.getCurrSubpara().top;
     }
     // Make sure the table height is sufficient.
     const docEvalCell = this.docs_[this.cursor.doc].eval;
@@ -1910,22 +2990,25 @@ class AntheaEval {
    * Returns to the previous document.
    */
   prevDocument() {
-    if (!this.READ_ONLY && (this.startedMarking_ || this.cursor.doc == 0)) {
+    if (!this.READ_ONLY &&
+        (this.error_ || this.cursor.presentationIndex === 0)) {
       return;
     }
-    if (!this.finishCurrSentence()) {
+    this.noteTiming('prev-document');
+    if (!this.finishCurrSubpara()) {
       return;
     }
     this.docs_[this.cursor.doc].row.style.display = 'none';
-    this.cursor.gotoDoc(this.cursor.doc - 1);
-    this.displayedDocNum_.innerHTML = '' + (this.cursor.doc + 1);
+    this.cursor.gotoDoc(
+        this.cursor.presentationOrder[this.cursor.presentationIndex - 1]);
+    this.displayedDocNum_.innerHTML = `${(this.cursor.presentationIndex + 1)}`;
     this.docs_[this.cursor.doc].row.style.display = '';
     const docEvalCell = this.docs_[this.cursor.doc].eval;
     docEvalCell.appendChild(this.evalPanel_);
-    this.showPageContextIfPresent();
+    this.showContextAndMediaIfPresent();
     this.redrawAllSegments();
     this.recomputeTops();
-    this.refreshCurrSentence();
+    this.refreshCurrSubpara();
   }
 
   /**
@@ -1933,23 +3016,55 @@ class AntheaEval {
    */
   nextDocument() {
     if (!this.READ_ONLY &&
-        (this.startedMarking_ || this.cursor.doc == this.docs_.length - 1 ||
+        (this.error_ ||
+         this.cursor.presentationIndex === this.docs_.length - 1 ||
          !this.cursor.seenDocEnd())) {
       return;
     }
-    if (!this.finishCurrSentence()) {
+    this.noteTiming('next-document');
+    if (!this.finishCurrSubpara()) {
       return;
     }
     this.docs_[this.cursor.doc].row.style.display = 'none';
-    this.cursor.gotoDoc(this.cursor.doc + 1);
-    this.displayedDocNum_.innerHTML = '' + (this.cursor.doc + 1);
+    this.cursor.gotoDoc(
+        this.cursor.presentationOrder[this.cursor.presentationIndex + 1]);
+    this.displayedDocNum_.innerHTML = `${(this.cursor.presentationIndex + 1)}`;
     this.docs_[this.cursor.doc].row.style.display = '';
     const docEvalCell = this.docs_[this.cursor.doc].eval;
     docEvalCell.appendChild(this.evalPanel_);
-    this.showPageContextIfPresent();
+    this.showContextAndMediaIfPresent();
     this.redrawAllSegments();
     this.recomputeTops();
-    this.refreshCurrSentence();
+    this.refreshCurrSubpara();
+  }
+
+  /**
+   * Builds instructions from section contents and section order. Section order
+   * and individual section contents (distinguished by name) can be specified in
+   * the template; if left unspecified, defaults are taken from
+   * template-base.js.
+   *
+   * @return {string}
+   */
+  buildInstructions() {
+    const order = this.config.instructions_section_order ||
+                  antheaTemplateBase.instructions_section_order;
+    let sections = antheaTemplateBase.instructions_section_contents;
+    /**
+     * Add or override each custom section content defined in the template, if
+     * any.
+     */
+    if (this.config.instructions_section_contents) {
+      for (let section_name in this.config.instructions_section_contents) {
+        sections[section_name] =
+            this.config.instructions_section_contents[section_name];
+      }
+    }
+    let builtInstructions = '';
+    for (let section_name of order) {
+      builtInstructions += sections[section_name];
+    }
+    return builtInstructions;
   }
 
   /**
@@ -1958,7 +3073,9 @@ class AntheaEval {
    * @param {!Element} panel The DIV element to populate.
    */
   populateMQMInstructions(panel) {
-    panel.innerHTML = (this.config.instructions || '') +
+    // Use hard-coded instructions if present, otherwise build from
+    // (possibly default) section order and contents.
+    panel.innerHTML = this.config.instructions +
         (!this.config.SKIP_RATINGS_TABLES ? `
       <p>
         <details open>
@@ -2166,6 +3283,224 @@ class AntheaEval {
   }
 
   /**
+   * Common method called to set up the editing of the error at the given
+   * index. Returns false if the parameters are not valid for an editable error.
+   * @param {number} index
+   * @param {!Event} evt
+   * @return {boolean}
+   */
+  setUpErrorEditing(index, evt) {
+    evt.preventDefault();
+    this.modifierMenu_.innerHTML = '';
+    const evalResult = this.currSegmentEval();
+    if (index < 0 || index >= evalResult.errors.length) {
+      return false;
+    }
+    const modButtonParent = this.modButtonParents_[index];
+    if (!modButtonParent) {
+      return false;
+    }
+    const modButton = modButtonParent.firstElementChild;
+    if (!modButton) {
+      return false;
+    }
+    this.errorIndex_ = index;
+    this.error_ = AntheaError.clone(evalResult.errors[index]);
+    return true;
+  }
+
+  /**
+   * Handles a click on "Delete" for the error at the given index.
+   * @param {number} index
+   * @param {!Event} evt
+   */
+  handleDeleteError(index, evt) {
+    if (!this.setUpErrorEditing(index, evt)) {
+      return;
+    }
+    this.error_.marked_deleted = true;
+    this.initiateErrorAction('error-deletion');
+    this.maybeConcludeError();
+  }
+
+  /**
+   * Handles a click on "Undelete" for the error at the given index.
+   * @param {number} index
+   * @param {!Event} evt
+   */
+  handleUndeleteError(index, evt) {
+    if (!this.setUpErrorEditing(index, evt)) {
+      return;
+    }
+    delete this.error_.marked_deleted;
+    this.initiateErrorAction('error-undeletion');
+    this.maybeConcludeError();
+  }
+
+  /**
+   * Handles a click on "Edit Severity" for the error at the given index.
+   * @param {number} index
+   * @param {!Event} evt
+   */
+  handleEditErrorSeverity(index, evt) {
+    if (!this.setUpErrorEditing(index, evt)) {
+      return;
+    }
+    this.error_.severity = '';
+    this.initiateErrorAction('editing-severity');
+    this.refreshCurrSubpara();
+  }
+
+  /**
+   * Handles a click on "Edit Type" for the error at the given index.
+   * @param {number} index
+   * @param {!Event} evt
+   */
+  handleEditErrorCategory(index, evt) {
+    if (!this.setUpErrorEditing(index, evt)) {
+      return;
+    }
+    this.error_.type = '';
+    this.error_.subtype = '';
+    this.initiateErrorAction('editing-category');
+    this.refreshCurrSubpara();
+  }
+
+  /**
+   * Handles a click on "Edit Span" for the error at the given index.
+   * @param {number} index
+   * @param {!Event} evt
+   */
+  handleEditErrorSpan(index, evt) {
+    if (!this.setUpErrorEditing(index, evt)) {
+      return;
+    }
+    this.error_.start = -1;
+    this.error_.end = -1;
+    this.initiateErrorAction('editing-span');
+    this.refreshCurrSubpara();
+  }
+
+  /**
+   * Handles a click on "Edit Note" for the error at the given index.
+   * @param {number} index
+   * @param {!Event} evt
+   */
+  handleEditErrorNote(index, evt) {
+    if (!this.setUpErrorEditing(index, evt)) {
+      return;
+    }
+    this.initiateErrorAction('editing-note');
+    const note = prompt("Please enter a short error description",
+                        this.error_.metadata.note ?? '');
+    if (!note && note != '') {
+      this.concludeError(true);
+      return;
+    }
+    this.error_.metadata.note = note;
+    this.concludeError();
+  }
+
+  /**
+   * Toggles the visibility of the error editing menu.
+   * @param {!Event} evt
+   */
+  toggleModifierMenu(evt) {
+    evt.preventDefault();
+    if (this.modifierMenu_.style.display == 'none') {
+      this.modifierMenu_.style.display = '';
+    } else {
+      this.modifierMenu_.style.display = 'none';
+    }
+  }
+
+  /**
+   * Creates and shows the error editing menu for the error at the given index.
+   * @param {number} index
+   * @param {!Event} evt
+   */
+  showModifierMenu(index, evt) {
+    evt.preventDefault();
+    const evalResult = this.currSegmentEval();
+    if (index < 0 || index >= evalResult.errors.length) {
+      return;
+    }
+    const modButtonParent = this.modButtonParents_[index];
+    if (!modButtonParent) {
+      return;
+    }
+    const modButton = modButtonParent.firstElementChild;
+    if (!modButton || modButton.disabled) {
+      return;
+    }
+
+    this.modifierMenu_.innerHTML = '';
+    const menuTable = document.createElement('table');
+    this.modifierMenu_.appendChild(menuTable);
+
+    const error = evalResult.errors[index];
+    if (error.marked_deleted) {
+      const modMenuUndelete = googdom.createDom(
+          'button',
+          {class: 'anthea-stretchy-button anthea-modifier-menu-button'},
+          'Undelete');
+      modMenuUndelete.addEventListener  (
+          'click', this.handleUndeleteError.bind(this, index));
+      menuTable.appendChild(
+          googdom.createDom(
+              'tr', null, googdom.createDom('td', null, modMenuUndelete)));
+    } else {
+      const modMenuDelete = googdom.createDom(
+          'button',
+          {class: 'anthea-stretchy-button anthea-modifier-menu-button'},
+          'Delete');
+      modMenuDelete.addEventListener(
+          'click', this.handleDeleteError.bind(this, index));
+      menuTable.appendChild(
+          googdom.createDom(
+              'tr', null, googdom.createDom('td', null, modMenuDelete)));
+      const modMenuSeverity = googdom.createDom(
+          'button',
+          {class: 'anthea-stretchy-button anthea-modifier-menu-button'},
+          'Edit Severity');
+      modMenuSeverity.addEventListener(
+          'click', this.handleEditErrorSeverity.bind(this, index));
+      menuTable.appendChild(
+          googdom.createDom(
+              'tr', null, googdom.createDom('td', null, modMenuSeverity)));
+      const modMenuCategory = googdom.createDom(
+          'button',
+          {class: 'anthea-stretchy-button anthea-modifier-menu-button'},
+          'Edit Type');
+      modMenuCategory.addEventListener(
+          'click', this.handleEditErrorCategory.bind(this, index));
+      menuTable.appendChild(
+          googdom.createDom(
+              'tr', null, googdom.createDom('td', null, modMenuCategory)));
+      const modMenuSpan = googdom.createDom(
+          'button',
+          {class: 'anthea-stretchy-button anthea-modifier-menu-button'},
+          'Edit Span');
+      modMenuSpan.addEventListener(
+          'click', this.handleEditErrorSpan.bind(this, index));
+      menuTable.appendChild(
+          googdom.createDom(
+              'tr', null, googdom.createDom('td', null, modMenuSpan)));
+      const modMenuNote = googdom.createDom(
+          'button',
+          {class: 'anthea-stretchy-button anthea-modifier-menu-button'},
+          'Edit Note');
+      modMenuNote.addEventListener(
+          'click', this.handleEditErrorNote.bind(this, index));
+      menuTable.appendChild(
+          googdom.createDom(
+              'tr', null, googdom.createDom('td', null, modMenuNote)));
+    }
+    modButtonParent.appendChild(this.modifierMenu_);
+    this.modifierMenu_.style.display = '';
+  }
+
+  /**
    * Creates the UI.
    *
    * @param {!Element} instructionsPanel The instructions panel to populate.
@@ -2223,7 +3558,7 @@ class AntheaEval {
         'button', {
           id: 'anthea-prev-button',
           class: 'anthea-stretchy-button anthea-eval-panel-tall',
-          title: 'Go back to the previous sentence ' +
+          title: 'Go back to the previous sentence(s) ' +
               '(shortcut: left-arrow key)'
         },
         '←');
@@ -2246,9 +3581,9 @@ class AntheaEval {
 
     for (let s in this.config.severities) {
       const severity = this.config.severities[s];
-      const action = severity.action || severity.display;
       const buttonText =
-          action + (severity.shortcut ? ' [' + severity.shortcut + ']' : '');
+          severity.display + (severity.shortcut ?
+                              ' [' + severity.shortcut + ']' : '');
       const severityButton = googdom.createDom(
           'button', {
             class: 'anthea-stretchy-button anthea-eval-panel-tall',
@@ -2277,11 +3612,17 @@ class AntheaEval {
       this.buttons_[s] = severityButton;
     }
 
+    /**
+     * Create the div that will contain the menu for modification of an
+     * existing annotation.
+     */
+    this.modifierMenu_ = googdom.createDom('div', 'anthea-modifier-menu');
+
     this.nextButton_ = googdom.createDom(
         'button', {
           id: 'anthea-next-button',
           class: 'anthea-stretchy-button anthea-eval-panel-tall',
-          title: 'Go to the next sentence ' +
+          title: 'Go to the next sentence(s) ' +
               '(shortcut: right-arrow key)'
         },
         '→');
@@ -2303,7 +3644,7 @@ class AntheaEval {
       googdom.createDom('div', 'anthea-eval-panel-nav', this.nextButton_)));
 
     this.displayedDocNum_ = googdom.createDom(
-      'span', null, '' + (this.cursor.doc + 1));
+      'span', null, `${(this.cursor.presentationIndex + 1)}`);
     this.displayedProgress_ = googdom.createDom('span', 'anthea-bold',
                                                  this.getPercentEvaluated());
     const progressMessage = googdom.createDom(
@@ -2314,11 +3655,13 @@ class AntheaEval {
           'span', null, ' (across all documents, ', this.displayedProgress_,
           ' of translation segments have been evaluated so far)'));
     }
+    const documentDisplayTerm =
+        this.config.SHARED_SOURCE ? 'Translation' : 'Document';
     this.prevDocButton_ = googdom.createDom(
       'button', {
         id: 'anthea-prev-doc-button', class: 'anthea-docnav-eval-button',
         title: 'Revisit the previous document' },
-      'Prev Document');
+      `Prev ${documentDisplayTerm}`);
     this.prevDocButton_.style.backgroundColor = this.buttonColor_;
     this.prevDocButton_.addEventListener(
       'click', (e) => {
@@ -2329,7 +3672,7 @@ class AntheaEval {
       'button', {
         id: 'anthea-next-doc-button', class: 'anthea-docnav-eval-button',
         title: 'Proceed with evaluating the next document' },
-      'Next Document');
+      `Next ${documentDisplayTerm}`);
     this.nextDocButton_.style.backgroundColor = this.buttonColor_;
     this.nextDocButton_.disabled = true;
     this.nextDocButton_.addEventListener(
@@ -2343,8 +3686,7 @@ class AntheaEval {
           this.prevDocButton_, this.nextDocButton_, progressMessage));
 
     this.makeEvalPanel();
-    this.phraseMarker_ = new AntheaPhraseMarker(this);
-
+    this.phraseMarker_ = new AntheaPhraseMarker(this, this.highlightColor_);
   }
 
   /**
@@ -2367,24 +3709,31 @@ class AntheaEval {
    * Adjusts the line-height of the smaller column to compensate.
    * @param {!Element} srcTD The source TD cell.
    * @param {!Element} tgtTD The target TD cell.
+   * @param {?Element} tgtTD2 The second target TD cell for sideBySide.
    */
-  adjustHeight(srcTD, tgtTD) {
+  adjustHeight(srcTD, tgtTD, tgtTD2) {
     if (!srcTD || !tgtTD) {
       return;
     }
+    // Set default line-height to 1.3 and get the line count in each column.
     srcTD.style.lineHeight = 1.3;
     tgtTD.style.lineHeight = 1.3;
     const srcLines = this.getApproxNumLines(srcTD, 'anthea-source-para');
     const tgtLines = this.getApproxNumLines(tgtTD, 'anthea-target-para');
-    let perc = 100;
-    if (srcLines < tgtLines) {
-      perc = Math.floor(100 * tgtLines / srcLines);
-    } else {
-      perc = Math.floor(100 * srcLines / tgtLines);
+    const colTDs = [[srcLines, srcTD], [tgtLines, tgtTD]];
+    if (tgtTD2) {
+      tgtTD2.style.lineHeight = 1.3;
+      const tgtLines2 = this.getApproxNumLines(tgtTD2, 'anthea-target-para');
+      colTDs.push([tgtLines2, tgtTD2]);
     }
-    if (perc >= 101) {
-      const smaller = (srcLines < tgtLines) ? srcTD : tgtTD;
-      smaller.style.lineHeight = 1.3 * perc / 100;
+    // Sort the columns by line count to decide which one to adjust.
+    colTDs.sort((a, b) => a[0] - b[0]);
+    // Adjust the line-height of the shorter columns to match the longest one.
+    for (let i = 0; i < colTDs.length; i++) {
+      const perc = Math.floor(100 * colTDs[colTDs.length - 1][0] / colTDs[i][0]);
+      if (perc >= 101) {
+        colTDs[i][1].style.lineHeight = 1.3 * perc / 100;
+      }
     }
   }
 
@@ -2451,6 +3800,43 @@ class AntheaEval {
   }
 
   /**
+   * Extract source media, if provided via an annotation on the first segment.
+   */
+  extractSourceMedia() {
+    this.manager_.log(this.manager_.INFO,
+                      'Extracting source media from annotations');
+    for (let i = 0; i < this.docs_.length; i++) {
+      const thisDoc = this.docs_[i];
+      // Add an empty image as a default, so that page layout is not broken for
+      // documents that don't have any source media.
+      thisDoc.srcMedia = {url: 'data:,', type: 'image'};
+      if (!thisDoc.docsys.annotations ||
+          thisDoc.docsys.annotations.length === 0 ||
+          !thisDoc.docsys.annotations[0]) {
+        this.manager_.log(this.manager_.WARNING,
+                          `No annotation (hence no source media) for doc ${i}`);
+        continue;
+      }
+      try {
+        const annotation = JSON.parse(thisDoc.docsys.annotations[0]);
+        if (!annotation.source_media) {
+          this.manager_.log(
+              this.manager_.ERROR,
+              `Incomplete/missing source media in the annotation for doc ${i}`);
+          continue;
+        }
+        // Overwrite the default source media.
+        thisDoc.srcMedia = annotation.source_media;
+      } catch (err) {
+        this.manager_.log(
+            this.manager_.ERROR,
+            `Unparseable source media in the annotation for doc ${i}`);
+        continue;
+      }
+    }
+  }
+
+  /**
    * Extract page contexts, if provided via an annotation on the first segment.
    */
   extractPageContexts() {
@@ -2482,6 +3868,70 @@ class AntheaEval {
         continue;
       }
     }
+  }
+
+  /**
+   * If the current document uses media as the source instead of text (e.g. a
+   * video), then show it in the source panel.
+   */
+  showSourceMediaIfPresent() {
+    const doc = this.docs_[this.cursor.doc];
+    if (!doc.srcMedia) {
+      return;
+    }
+    if (!["video", "image"].includes(doc.srcMedia.type)) {
+      this.manager_.log(
+          this.manager_.ERROR,
+          `Source media is not a video or image (or type not specified): "${
+              doc.srcMedia.type}"`);
+      return;
+    }
+    const driveRegex = /https:\/\/drive.google.com\/file\/d\/[^\/]+\/preview/;
+    const ytRegex = /https:\/\/www.youtube.com\/embed\/.*/;
+    if (doc.srcMedia.type === 'video' &&
+        ![driveRegex, ytRegex].some((re) => re.test(doc.srcMedia.url))) {
+      this.manager_.log(
+          this.manager_.ERROR,
+          `Source media is a video but not from YouTube or Drive (or is misformatted): ${
+              doc.srcMedia.url}`);
+      return;
+    }
+    const mediaCell = googdom.createDom(
+        'div', 'anthea-source-media-cell');
+    switch (doc.srcMedia.type) {
+      case 'image':
+        mediaCell.appendChild(googdom.createDom(
+          'img', {src: doc.srcMedia.url, title: 'Source media image'}));
+        break;
+      case 'video':
+        mediaCell.appendChild(googdom.createDom('iframe', {
+          src: doc.srcMedia.url,
+          title: 'Source media video',
+          allow: 'autoplay; encrypted-media;',
+          allowfullscreen: true
+        }));
+        break;
+      default:
+        this.manager_.log(
+            this.manager_.ERROR,
+            `Source media is not a video or image (or type not specified): "${
+                doc.srcMedia.type}"`);
+        return;
+    }
+    // The source text cell is the first child of the row. Replace it with the
+    // media cell.
+    doc.row.replaceChild(
+        googdom.createDom('td', null, mediaCell), doc.row.firstChild);
+  }
+
+  /**
+   * If the current document has available page context or source media, then
+   * display them. See showPageContextIfPresent() and showSourceMediaIfPresent()
+   * for more details.
+   */
+  showContextAndMediaIfPresent() {
+    this.showPageContextIfPresent();
+    this.showSourceMediaIfPresent();
   }
 
   /**
@@ -2575,29 +4025,239 @@ class AntheaEval {
    * @param {!Element} evalDiv The DIV in which to create the eval.
    * @param {string} templateName The template name.
    * @param {!Array<!Object>} projectData Project data, including src/tgt
-   *     sentences. The array also may have srcLang/tgtLang properties.
+   *     text segments. The array also may have a "parameters" property.
    * @param {?Array<!Object>} projectResults Previously saved partial results.
    * @param {number=} hotwPercent Percent rate for HOTW testing.
    */
   setUpEval(evalDiv, templateName, projectData, projectResults, hotwPercent=0) {
-    if (antheaTemplates[templateName]) {
+    if (typeof antheaTemplateBase == 'object' &&
+        typeof MarotUtils == 'function' &&
+        antheaTemplates[templateName]) {
+      /** We have all the pieces. */
       this.setUpEvalWithConfig(
           evalDiv, templateName, antheaTemplates[templateName], projectData,
           projectResults, hotwPercent);
       return;
     }
-    /**
-     * We set the template to an empty object so that we do not keep retrying
-     * to load the template file.
-     */
-    antheaTemplates[templateName] = {};
-    googdom.setInnerHtml(evalDiv, 'Loading template ' + templateName + '...');
-    const scriptTag = document.createElement('script');
-    scriptTag.src = this.scriptUrlPrefix_ + 'template-' +
-                    templateName.toLowerCase() + '.js';
-    scriptTag.onload = this.setUpEval.bind(
+    if (this.haveInitiatedLoadingDependencies) {
+      /** Need to wait till called again with all deppendencies loaded. */
+      return;
+    }
+    const retrier = this.setUpEval.bind(
         this, evalDiv, templateName, projectData, projectResults, hotwPercent);
-    document.head.append(scriptTag);
+    googdom.setInnerHtml(
+        evalDiv, 'Loading dependencies & template ' + templateName + '...');
+    const filesToLoad = [];
+    if (typeof antheaTemplateBase != 'object') {
+      filesToLoad.push('template-base.js');
+    }
+    if (!antheaTemplates[templateName]) {
+      filesToLoad.push('template-' + templateName.toLowerCase() + '.js');
+    }
+    if (typeof MarotUtils != 'function') {
+      filesToLoad.push('marot-utils.js');
+    }
+    for (const f of filesToLoad) {
+      const scriptTag = document.createElement('script');
+      scriptTag.src = this.scriptUrlPrefix_ + f;
+      scriptTag.onload = retrier;
+      document.head.append(scriptTag);
+    }
+    this.haveInitiatedLoadingDependencies = true;
+  }
+
+  /**
+   * Returns true if the language code (BCP-47) is for a language that
+   * generally uses spaces between sentences.
+   * @param {string} lang BCP 47 code
+   * @return {boolean}
+   */
+  isSpaceSepLang(lang) {
+    const lowerLang = lang.toLowerCase();
+    if (lowerLang.startsWith('ja') || lowerLang.startsWith('zh')) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Validates the input format of the SIDE_BY_SIDE mode.
+   * The adjacent docsys should have the same source segments.
+   * @param {!Array<!Object>} projectData The input data.
+   * @return {boolean}
+   */
+  validateSideBySideData(projectData) {
+    for (let i = 0; i < projectData.length; i += 2) {
+      const docsys = projectData[i];
+      const docsys2 = projectData[i + 1];
+      if (docsys.srcSegments.length !== docsys2.srcSegments.length) {
+        this.manager_.log(this.manager_.ERROR,
+                          "Source segment lengths differ between systems!");
+        return false;
+      }
+      for (let j = 0; j < docsys.srcSegments.length; j++) {
+        if (docsys.srcSegments[j] !== docsys2.srcSegments[j]) {
+          this.manager_.log(this.manager_.ERROR,
+                            'Source segments differ at index ' + j);
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Checks whether all expected docsys indices are present. For SIDE_BY_SIDE
+   * templates, also checks that docsys pairs in the input are still adjacent
+   * in the given order.
+   * @param {number} dataLength The length of the input data.
+   * @param {!Array<number>} dataPresentationOrder A permutation of input data
+   *     indices.
+   * @param {number} groupSize The size of chunks that must remain contiguous.
+   * @return {boolean}
+   */
+  validateDataPresentationOrder(dataLength, dataPresentationOrder, groupSize) {
+    if (dataLength !== dataPresentationOrder.length) {
+      this.manager_.log(
+          this.manager_.ERROR,
+          `Presentation order length (${
+              dataPresentationOrder
+                  .length}) does not match input data length (${
+              dataLength})!`);
+      return false;
+    }
+    const providedIndices = new Set(dataPresentationOrder);
+    const expectedIndices = Array.from({length: dataLength}, (v, i) => i);
+    const hasAllExpectedIndices = expectedIndices.every((v) => providedIndices.has(v));
+    if (!hasAllExpectedIndices) {
+      this.manager_.log(
+          this.manager_.ERROR,
+          'Presentation order is missing one or more expected indices!');
+      return false;
+    }
+    if (groupSize > 1) {
+      if (dataPresentationOrder.length % groupSize !== 0) {
+        this.manager_.log(
+            this.manager_.ERROR,
+            `Input data length prevents forming groups of size ${groupSize}!`);
+        return false;
+      }
+      for (let i = 0; i < dataPresentationOrder.length; i += groupSize) {
+        const sortedDataGroup =
+            dataPresentationOrder.slice(i, i + groupSize).sort();
+        if (sortedDataGroup.at(-1) - sortedDataGroup[0] !== groupSize - 1) {
+          this.manager_.log(
+              this.manager_.ERROR, 'Presentation order separates some groups!');
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Creates a random presentation order, by shuffling the order of groups and
+   * the order of data within each group.
+   * @param {number} dataLength The length of the input data.
+   * @param {number} groupSize The size of groups that should remain contiguous.
+   * @param {!AntheaDeterministicRandom} pseudoRandNumGenerator A random number generator.
+   * @return {!Array<number>}
+   */
+  randomPresentationOrder(dataLength, groupSize, pseudoRandNumGenerator) {
+    const dataPresentationOrder = [];
+    // First decide the order in which to show each group.
+    const groupPresentationOrder = AntheaEval.pseudoRandomShuffle(
+        Array.from({length: dataLength / groupSize}, (v, i) => i),
+        pseudoRandNumGenerator);
+    if (groupSize === 1) {
+      return groupPresentationOrder;
+    }
+    // If groups have multiple items, shuffle within each group.
+    const groupOffsets = Array.from({length: groupSize}, (v, i) => i);
+    groupPresentationOrder.forEach(
+        (groupIdx) => dataPresentationOrder.push(...AntheaEval.pseudoRandomShuffle(
+            groupOffsets.map((offset) => offset + groupIdx * groupSize),
+            pseudoRandNumGenerator)));
+    return dataPresentationOrder;
+  }
+
+  /**
+   * If the JSON parameters provide a presentation order, returns
+   * it. If not but a non-zero shuffle_seed is provided, produces a random
+   * presentation order. Otherwise, returns an unshuffled presentation order.
+   * @param {!Jsonable} parameters The JSON parameters.
+   * @param {number} dataLength The length of the input data.
+   * @param {number} groupSize The size of groups that should remain contiguous.
+   * @return {!Array<number>}
+   */
+  getOrCreateDataPresentationOrder(parameters, dataLength, groupSize) {
+    // A seed of 0 will result in no shuffling.
+    const pseudoRandNumGenerator =
+        new AntheaDeterministicRandom(parameters.shuffle_seed || 0);
+    // If a presentation order is provided, the random number generator is not
+    // used.
+    const dataPresentationOrder = parameters.presentation_order ||
+        this.randomPresentationOrder(
+            dataLength, groupSize, pseudoRandNumGenerator);
+    return dataPresentationOrder;
+  }
+  /**
+   * Builds HTML for target subparagraphs.
+   * Iterates over the provided target subparagraphs, constructs HTML for each,
+   * and accumulates the result in `tgtSpannified`. Also updates the `segment` object
+   * with relevant information, including word count and potential hotword data.
+   * @param {!Element} segment The segment to add the subpara to.
+   * @param {!Array<!Object>} tgtSubparas The target subparas.
+   * @param {string} tgtSpannified The target span HTML.
+   * @param {string} tgtSegmentClass The segment class.
+   * @param {string} tgtParaBreak The target paragraph break.
+   * @param {!Object} evalResult The eval result object.
+   * @param {number} lastTimestampMS The last timestamp.
+   * @param {string} tgtSubparaClassName The target subpara class name.
+   * @return {string} The updated tgtSpannified.
+   */
+  buildTargetSubparaHTML(segment, tgtSubparas, tgtSpannified,
+                         tgtSegmentClass, tgtParaBreak, evalResult,
+                         lastTimestampMS, tgtSubparaClassName) {
+    for (let t = 0; t < tgtSubparas.length; t++) {
+      const tgtSubpara = tgtSubparas[t];
+      tgtSpannified += tgtSubparaClassName + tgtSegmentClass + '">' +
+                      (tgtSubpara.hotwSpanHTML || tgtSubpara.spanHTML) +
+                      '</span>';
+      if (tgtSubpara.ends_with_para_break) {
+        tgtSpannified += tgtParaBreak;
+      }
+      segment.numTgtWords += tgtSubpara.num_words;
+      if (tgtSubpara.hotwError) {
+        tgtSubpara.hotw = {
+          timestamp: lastTimestampMS,
+          injected_error: tgtSubpara.hotwError,
+          hotw_html: tgtSubpara.hotwSpanHTML,
+          hotw_type: tgtSubpara.hotwType,
+          para: t,
+          // Add in the location of where hotw is injected.
+          // It is removed when merging/splitting the saved results.
+          location: tgtSubparaClassName.includes("-target2-") ?
+              'translation2' :
+              'translation',
+          done: false,
+          found: false,
+        };
+        evalResult['hotw_list'].push(tgtSubpara.hotw);
+      }
+    }
+    return tgtSpannified;
+  }
+
+  /**
+   * Determines whether the source column should be displayed. True if it will
+   * be populated with source text or source media.
+   *
+   * @param {!Object} config The template configuration object.
+   * @return {boolean} True if the source column should be displayed.
+   */
+  shouldDisplaySourceColumn(config) {
+    return !config.TARGET_SIDE_ONLY || config.USE_SOURCE_MEDIA;
   }
 
   /**
@@ -2608,7 +4268,7 @@ class AntheaEval {
    * @param {string} templateName The template name.
    * @param {!Object} config The template configuration object.
    * @param {!Array<!Object>} projectData Project data, including src/tgt
-   *     sentences. The array also may have srcLang/tgtLang properties.
+   *     text segments. The array also may have a "parameters" property.
    * @param {?Array<!Object>} projectResults Previously saved partial results.
    * @param {number} hotwPercent Percent rate for HOTW testing.
    */
@@ -2617,6 +4277,9 @@ class AntheaEval {
     this.config = config;
     evalDiv.innerHTML = '';
 
+    if (!this.config.instructions) {
+      this.config.instructions = this.buildInstructions();
+    }
     const instructionsPanel = googdom.createDom('div',
                                                 'anthea-mqm-instructions');
     instructionsPanel.id = 'anthea-mqm-instructions-panel';
@@ -2632,36 +4295,138 @@ class AntheaEval {
     this.contextRow_ = googdom.createDom('tr', 'anthea-context-row');
     this.contextRow_.style.display = 'none';
 
-    const srcHeading = projectData.srcLang ?
-        ('Source (' + projectData.srcLang + ')') : 'Source';
-    const srcHeadingTD = googdom.createDom(
-        'td', 'anthea-text-heading',
-        googdom.createDom('div', null, srcHeading));
-    const targetLabel = config.TARGET_SIDE_ONLY ? 'Text' : 'Translation';
-    const tgtHeading = projectData.tgtLang ?
-        (targetLabel + ' (' + projectData.tgtLang + ')') : targetLabel;
-    const tgtHeadingTD = googdom.createDom(
-        'td', 'anthea-text-heading',
-        googdom.createDom('div', null, tgtHeading));
+    const parameters = projectData.parameters || {};
+    this.srcLang = parameters.source_language || '';
+    this.tgtLang = parameters.target_language || '';
+
+    let noteToRaters = parameters.hasOwnProperty('note_to_raters') ?
+        parameters.note_to_raters :
+        '';
+    /**
+     * By default, raters navigate in units of sentences. If subpara_*
+     * parameters have been passed in, they control the unit size.
+     * Also support the old names of these parameters (paralet_*).
+     *
+     * When collecting quality scores, we want to make it clear that the score
+     * applies to the entire segment, so we set the unit sizes to -1 to indicate
+     * that no splitting should happen.
+     */
+    if (config.COLLECT_QUALITY_SCORE) {
+      parameters.subpara_sentences = -1;
+      parameters.subpara_tokens = -1;
+    }
+    const subparaSentences = parameters.subpara_sentences ?? (parameters.paralet_sentences ?? 1);
+    const subparaTokens = parameters.subpara_tokens ?? (parameters.paralet_tokens ?? 1);
+
+    if (parameters.hasOwnProperty('hotw_percent')) {
+      /* Override the passed value */
+      hotwPercent = parameters.hotw_percent;
+    }
+    /** Are we only pretending to add hotw errors, for training? */
+    const hotwPretend = parameters.hotw_pretend || false;
+
+    const srcHeading =
+        this.srcLang ? ('Source (' + this.srcLang + ')') : 'Source';
+    const srcHeadingDiv = googdom.createDom('div', null, srcHeading);
+
+    const targetLabel =
+        this.shouldDisplaySourceColumn(config) ? 'Translation' : 'Text';
+    const tgtHeading = this.tgtLang ?
+        (targetLabel + ' (' + this.tgtLang + ')') : targetLabel;
+    const tgtHeadingDiv = googdom.createDom('div', null, tgtHeading);
+
+    // Set up second target column in the sideBySide mode.
+    const targetLabel2 = `${targetLabel} 2`;
+    const tgtHeading2 =
+        this.tgtLang ? `${targetLabel2} (${this.tgtLang})` : targetLabel2;
+    const tgtHeadingDiv2 = googdom.createDom('div', null, tgtHeading2);
+
     const evalHeading = this.READ_ONLY ?
         'Evaluations (view-only)' : 'Evaluations';
+    const evalHeadingDiv = googdom.createDom('div', null, evalHeading);
+
+    if (config.subheadings) {
+      if (config.subheadings.source) {
+        srcHeadingDiv.appendChild(googdom.createDom('br'));
+        srcHeadingDiv.appendChild(googdom.createDom(
+            'span', 'anthea-subheading', config.subheadings.source));
+      }
+      if (config.subheadings.target) {
+        tgtHeadingDiv.appendChild(googdom.createDom('br'));
+        tgtHeadingDiv.appendChild(googdom.createDom(
+            'span', 'anthea-subheading', config.subheadings.target));
+      }
+      if (config.subheadings.target) {
+        tgtHeadingDiv2.appendChild(googdom.createDom('br'));
+        tgtHeadingDiv2.appendChild(googdom.createDom(
+            'span', 'anthea-subheading', config.subheadings.target));
+      }
+      if (config.subheadings.evaluations) {
+        evalHeadingDiv.appendChild(googdom.createDom('br'));
+        evalHeadingDiv.appendChild(googdom.createDom(
+            'span', 'anthea-subheading', config.subheadings.evaluations));
+      }
+    }
+
+    const srcHeadingTD = googdom.createDom(
+        'td', 'anthea-text-heading', srcHeadingDiv);
+    const tgtHeadingTD = googdom.createDom(
+        'td', 'anthea-text-heading', tgtHeadingDiv);
+    const headerRow = googdom.createDom(
+      'tr', null, srcHeadingTD, tgtHeadingTD);
+    if (config.SIDE_BY_SIDE) {
+      const tgtHeadingTD2 = googdom.createDom(
+        'td', 'anthea-text-heading', tgtHeadingDiv2);
+      headerRow.appendChild(tgtHeadingTD2);
+    }
     const evalHeadingTD = googdom.createDom(
-        'td', 'anthea-text-heading',
-        googdom.createDom('div', null, evalHeading));
+      'td', 'anthea-text-heading', evalHeadingDiv);
+    headerRow.appendChild(evalHeadingTD);
     const docTextTable = googdom.createDom(
         'table', 'anthea-document-text-table',
-        googdom.createDom(
-            'tr', null, srcHeadingTD, tgtHeadingTD, evalHeadingTD),
+        headerRow,
         this.contextRow_);
-    if (config.TARGET_SIDE_ONLY) {
+    if (!this.shouldDisplaySourceColumn(config)) {
       srcHeadingTD.style.display = 'none';
     }
     evalDiv.appendChild(docTextTable);
 
-    for (let docsys of projectData) {
-      const doc = {
-        'docsys': docsys,
-      };
+    const srcParaBreak =
+        `</p><p class="anthea-source-para" dir="auto" lang="${this.srcLang}">`;
+    const tgtParaBreak =
+        `</p><p class="anthea-target-para" dir="auto" lang="${this.tgtLang}">`;
+
+    let priorResults = [];
+    let priorRaters = [];
+
+    // The size of groups meant to be evaluated together. Shuffling will not
+    // break up these groups.
+    const groupSize = config.SIDE_BY_SIDE ? 2 : 1;
+    if (config.SIDE_BY_SIDE &&
+        !this.validateSideBySideData(projectData, groupSize)) {
+      return;
+    }
+
+    const dataPresentationOrder = this.getOrCreateDataPresentationOrder(
+        parameters, projectData.length, groupSize);
+    if (!this.validateDataPresentationOrder(
+            projectData.length, dataPresentationOrder, groupSize)) {
+      return;
+    }
+    // Recover presentation order of docsys groups.
+    const groupPresentationOrder = [];
+    for (let i = 0; i < dataPresentationOrder.length; i += groupSize) {
+      groupPresentationOrder.push(
+          Math.floor(dataPresentationOrder[i] / groupSize));
+    }
+
+    for (let i = 0; i < projectData.length; i += groupSize) {
+      const docsys = projectData[i];
+      const doc = {'docsys': docsys};
+      const docsys2 = config.SIDE_BY_SIDE ? projectData[i + 1] : null;
+      if (config.SIDE_BY_SIDE) {
+        doc.docsys2 = docsys2;
+      }
       this.docs_.push(doc);
       doc.eval = googdom.createDom('div', 'anthea-document-eval-div');
 
@@ -2669,12 +4434,21 @@ class AntheaEval {
                                               'anthea-document-text-cell');
       const docTextTgtRow = googdom.createDom('td',
                                               'anthea-document-text-cell');
-      doc.row = googdom.createDom(
-          'tr', null, docTextSrcRow, docTextTgtRow,
-          googdom.createDom('td', 'anthea-document-eval-cell', doc.eval));
-      if (this.docs_.length > 1) {
-        doc.row.style.display = 'none';
+      const docTextTgtRow2 = config.SIDE_BY_SIDE ? googdom.createDom('td',
+                                              'anthea-document-text-cell') : null;
+      const tgtsOrder = [1];
+      const tgtRows = [docTextTgtRow];
+      if (config.SIDE_BY_SIDE) {
+        // Even indices mean that the first docsys should be on the left.
+        const tgt2SpliceIndex =
+            dataPresentationOrder.indexOf(i) % 2 === 0 ? 1 : 0;
+        tgtsOrder.splice(tgt2SpliceIndex, 0, 2);
+        tgtRows.splice(tgt2SpliceIndex, 0, docTextTgtRow2);
       }
+      doc.row = googdom.createDom('tr',
+                                  null, docTextSrcRow,
+                                  ...tgtRows,
+                                  googdom.createDom('td', 'anthea-document-eval-cell', doc.eval));
       if (config.TARGET_SIDE_ONLY) {
         docTextSrcRow.style.display = 'none';
       }
@@ -2685,13 +4459,24 @@ class AntheaEval {
 
       const srcSegments = docsys.srcSegments;
       const tgtSegments = docsys.tgtSegments;
-      let srcSpannified = '<p class="anthea-source-para" dir="auto">';
-      let tgtSpannified = '<p class="anthea-target-para" dir="auto">';
-      for (let i = 0; i < srcSegments.length; i++) {
-        if (srcSegments[i].length == 0) {
+      // Create the second target column for sideBySide templates.
+      const tgtSegments2 = config.SIDE_BY_SIDE ? docsys2.tgtSegments : null;
+      const annotations = docsys.annotations;
+      let srcSpannified =
+          `<p class="anthea-source-para" dir="auto" lang="${this.srcLang}">`;
+      let tgtSpannified =
+          `<p class="anthea-target-para" dir="auto" lang="${this.tgtLang}">`;
+      let tgtSpannified2 = config.SIDE_BY_SIDE ?
+          `<p class="anthea-target-para" dir="auto" lang="${this.tgtLang}">` :
+          '';
+      const addEndSpacesSrc = this.isSpaceSepLang(this.srcLang);
+      const addEndSpacesTgt = this.isSpaceSepLang(this.tgtLang);
+      for (let j = 0; j < srcSegments.length; j++) {
+        if (srcSegments[j].length === 0 && tgtSegments[j].length === 0) {
           /* New paragraph. */
-          srcSpannified += '</p><p class="anthea-source-para" dir="auto">';
-          tgtSpannified += '</p><p class="anthea-target-para" dir="auto">';
+          srcSpannified += srcParaBreak;
+          tgtSpannified += tgtParaBreak;
+          tgtSpannified2 += config.SIDE_BY_SIDE ? tgtParaBreak : '';
           continue;
         }
 
@@ -2703,79 +4488,156 @@ class AntheaEval {
           'timing': {},
           'hotw_list': [],
         };
+        if (config.COLLECT_QUALITY_SCORE) {
+          evalResult.quality_scores =
+              Array.from({'length': config.SIDE_BY_SIDE ? 2 : 1}).fill(-1);
+        }
         this.evalResults_.push(evalResult);
+        if (j < annotations.length) {
+          let parsed_anno = {};
+          try {
+            parsed_anno = JSON.parse(annotations[j]);
+          } catch (err) {
+            parsed_anno = {};
+          }
+          if (parsed_anno.hasOwnProperty('prior_result')) {
+            priorResults.push(parsed_anno.prior_result);
+            let priorRater = 'unspecified-prior-rater';
+            if (parsed_anno.hasOwnProperty('prior_rater')) {
+              priorRater = parsed_anno.prior_rater;
+            } else if (parameters.hasOwnProperty('prior_rater')) {
+              priorRater = parameters.prior_rater;
+            }
+            priorRaters.push(priorRater);
+          }
+          if (parsed_anno.hasOwnProperty('note_to_raters')) {
+            if (noteToRaters) {
+              this.manager_.log(
+                  this.manager_.ERROR,
+                  'Found note to raters in multiple places (JSON parameters ' +
+                  'and/or multiple segment annotations); ignoring ' +
+                  'subsequent notes');
+              }
+            else {
+              noteToRaters = parsed_anno.note_to_raters;
+            }
+          }
+        }
 
         const segment = {
           doc: this.docs_.length - 1,
-          srcText: srcSegments[i],
-          tgtText: tgtSegments[i],
+          srcText: srcSegments[j],
+          tgtText: tgtSegments[j],
+          tgtText2: config.SIDE_BY_SIDE ? tgtSegments2[j] : '',
+          tgtsOrder: tgtsOrder,
           numTgtWords: 0,
-          srcSents: AntheaEval.splitAndSpannify(srcSegments[i], 0),
-          tgtSents: AntheaEval.splitAndSpannify(
-              tgtSegments[i], this.READ_ONLY ? 0 : hotwPercent),
+          numTgtWords2: 0,
+          srcSubparas: AntheaEval.splitAndSpannify(
+              srcSegments[j], addEndSpacesSrc,
+              subparaSentences, subparaTokens, 0),
+          tgtSubparas: AntheaEval.splitAndSpannify(
+              tgtSegments[j], addEndSpacesTgt,
+              subparaSentences, subparaTokens,
+              this.READ_ONLY ? 0 : hotwPercent, hotwPretend, this.tgtLang),
+          tgtSubparas2: config.SIDE_BY_SIDE ? AntheaEval.splitAndSpannify(
+              tgtSegments2[j], addEndSpacesTgt,
+              subparaSentences, subparaTokens,
+              this.READ_ONLY ? 0 : hotwPercent, hotwPretend, this.tgtLang) : [],
         };
+        const segIndex = this.segments_.length;
         this.segments_.push(segment);
 
-        srcSpannified += '<span class="anthea-source-segment">';
-        for (let srcSent of segment.srcSents) {
-          srcSpannified += '<span class="anthea-source-sentence">' +
-                           srcSent.spanHTML + '</span>';
-        }
-        srcSpannified += '</span>';
-
-        tgtSpannified += '<span class="anthea-target-segment">';
-        for (let t = 0; t < segment.tgtSents.length; t++) {
-          const tgtSent = segment.tgtSents[t];
-          tgtSpannified += '<span class="anthea-target-sentence">' +
-                           (tgtSent.hotwSpanHTML || tgtSent.spanHTML) +
-                           '</span>';
-          segment.numTgtWords += tgtSent.numWords;
-          if (tgtSent.injectedError) {
-            tgtSent.hotw = {
-              'timestamp': this.lastTimestampMS_,
-              'injected_error': tgtSent.injectedError,
-              'sentence_index': t,
-              'done': false,
-              'found': false,
-            };
-            evalResult['hotw_list'].push(tgtSent.hotw);
+        const srcSegmentClass = 'anthea-source-segment-' + segIndex;
+        for (let srcSubpara of segment.srcSubparas) {
+          srcSpannified += '<span class="anthea-source-subpara ' +
+                          srcSegmentClass + '">' +
+                          srcSubpara.spanHTML + '</span>';
+          if (srcSubpara.ends_with_para_break) {
+            srcSpannified += srcParaBreak;
           }
         }
-        this.numTgtWordsTotal_ += segment.numTgtWords;
-        tgtSpannified += '</span>';
 
+        const tgtSegmentClass = 'anthea-target-segment-' + segIndex;
+        const tgtSegmentClass2 = 'anthea-target2-segment-' + segIndex;
+        tgtSpannified = this.buildTargetSubparaHTML(segment,
+                                               segment.tgtSubparas,
+                                               tgtSpannified,
+                                               tgtSegmentClass,
+                                               tgtParaBreak,
+                                               evalResult,
+                                               this.lastTimestampMS_,
+                                               '<span class="anthea-target-subpara ');
+        if (config.SIDE_BY_SIDE) {
+          tgtSpannified2 = this.buildTargetSubparaHTML(segment,
+                                                  segment.tgtSubparas2,
+                                                  tgtSpannified2,
+                                                  tgtSegmentClass2,
+                                                  tgtParaBreak,
+                                                  evalResult,
+                                                  this.lastTimestampMS_,
+                                                  '<span class="anthea-target2-subpara ');
+        }
+        // Increment the total target word count for the progress tracker.
+        this.numTgtWordsTotal_ += segment.numTgtWords;
         doc.numSG++;
       }
       googdom.setInnerHtml(docTextSrcRow, srcSpannified + '</p>');
       googdom.setInnerHtml(docTextTgtRow, tgtSpannified + '</p>');
-      this.adjustHeight(docTextSrcRow, docTextTgtRow);
+      if (config.SIDE_BY_SIDE) {
+        googdom.setInnerHtml(docTextTgtRow2, tgtSpannified2 + '</p>');
+      }
+      // Adjust line height, then hide all but the first group.
+      this.adjustHeight(docTextSrcRow, docTextTgtRow, docTextTgtRow2);
+      if (i !== groupSize * groupPresentationOrder[0]) {
+        doc.row.style.display = 'none';
+      }
     }
-
-    /* Grab segment and sentence span elements */
-    const srcSegmentSpans = document.getElementsByClassName(
-      'anthea-source-segment');
-    const tgtSegmentSpans = document.getElementsByClassName(
-      'anthea-target-segment');
-    console.assert(srcSegmentSpans.length == this.segments_.length);
-    console.assert(tgtSegmentSpans.length == this.segments_.length);
+    // For shared-source templates, verify that every docsys has the same
+    // source segments.
+    if (config.SHARED_SOURCE) {
+      const sharedSrcSegments = [];
+      let sameSrc = true;
+      for (const doc of this.docs_) {
+        const docsys = doc.docsys;
+        if (sharedSrcSegments.length === 0) {
+          sharedSrcSegments.push(...docsys.srcSegments);
+        } else if (sharedSrcSegments.length === docsys.srcSegments.length) {
+          sameSrc &&= docsys.srcSegments.every(
+              (val, idx) => val === sharedSrcSegments[idx]);
+        } else {
+          sameSrc = false;
+        }
+      }
+      if (!sameSrc) {
+        this.manager_.log(
+            this.manager_.ERROR,
+            'This is a shared-source template, but not all documents have' +
+                ' the same source segments!');
+      }
+    }
     for (let i = 0; i < this.segments_.length; i++) {
       const segment = this.segments_[i];
-      segment.srcSegmentSpan = srcSegmentSpans[i];
-      segment.tgtSegmentSpan = tgtSegmentSpans[i];
-      const srcSentSpans = segment.srcSegmentSpan.getElementsByClassName(
-        'anthea-source-sentence');
-      const tgtSentSpans = segment.tgtSegmentSpan.getElementsByClassName(
-        'anthea-target-sentence');
-      console.assert(srcSentSpans.length == segment.srcSents.length);
-      console.assert(tgtSentSpans.length == segment.tgtSents.length);
-      for (let s = 0; s < segment.srcSents.length; s++) {
-        segment.srcSents[s].sentSpan = srcSentSpans[s];
-      } 
-      for (let t = 0; t < segment.tgtSents.length; t++) {
-        segment.tgtSents[t].sentSpan = tgtSentSpans[t];
-      } 
+      const srcSubparaSpans = document.getElementsByClassName(
+          'anthea-source-segment-' + i);
+      const tgtSubparaSpans = document.getElementsByClassName(
+        'anthea-target-segment-' + i);
+      console.assert(srcSubparaSpans.length == segment.srcSubparas.length);
+      console.assert(tgtSubparaSpans.length == segment.tgtSubparas.length);
+      for (let s = 0; s < segment.srcSubparas.length; s++) {
+        segment.srcSubparas[s].subparaSpan = srcSubparaSpans[s];
+      }
+      for (let t = 0; t < segment.tgtSubparas.length; t++) {
+        segment.tgtSubparas[t].subparaSpan = tgtSubparaSpans[t];
+      }
+      if (config.SIDE_BY_SIDE) {
+        const tgtSubparaSpans2 = document.getElementsByClassName(
+          'anthea-target2-segment-' + i);
+        console.assert(tgtSubparaSpans2.length === segment.tgtSubparas2.length);
+        for (let t = 0; t < segment.tgtSubparas2.length; t++) {
+          segment.tgtSubparas2[t].subparaSpan = tgtSubparaSpans2[t];
+        }
+      }
     }
-
     const controlPanel = document.createElement('div');
     controlPanel.id = 'anthea-control-panel';
     evalDiv.append(controlPanel);
@@ -2803,14 +4665,41 @@ class AntheaEval {
       }
     }
 
-    this.cursor = new AntheaCursor(this.segments_,
-                                   config.TARGET_SIDE_ONLY || false,
-                                   config.TARGET_SIDE_FIRST || false,
-                                   this.updateProgressForSegment.bind(this));
+    this.cursor = new AntheaCursor(
+        this.segments_,
+        !!config.TARGET_SIDE_ONLY,
+        !!config.TARGET_SIDE_FIRST,
+        !!config.SIDE_BY_SIDE,
+        this.updateProgressForSegment.bind(this),
+        groupPresentationOrder);
 
+    if (noteToRaters) {
+      this.config.instructions +=
+          '<p class="anthea-note-to-raters">' +
+          this.escapeHtml(noteToRaters) + '</p>';
+    }
     this.createUI(instructionsPanel, controlPanel);
 
-    this.restoreResults(projectResults);
+    if (parameters.hasOwnProperty('prior_results')) {
+      if (priorResults.length > 0) {
+        this.manager_.log(
+            this.manager_.ERROR,
+            'Found prior results in both JSON parameters and segment ' +
+                'annotations; ignoring JSON parameters');
+      } else {
+        priorResults = parameters.prior_results;
+        let priorRater = 'unspecified-prior-rater';
+        if (parameters.hasOwnProperty('prior_rater')) {
+          priorRater = parameters.prior_rater;
+        }
+        priorRaters = Array.from({'length': priorResults.length})
+            .fill(priorRater);
+      }
+    }
+    if (priorResults.length > 0) {
+      this.startFromPriorResults(priorRaters, priorResults);
+    }
+    this.restoreEvalResults(projectResults);
     this.saveResults();
 
     const metadata = {
@@ -2818,20 +4707,18 @@ class AntheaEval {
       config: config,
       hotw_percent: hotwPercent,
       anthea_version: this.VERSION,
+      ...parameters,
     };
-    if (projectData.srcLang) {
-      metadata.source_language = projectData.srcLang;
-    }
-    if (projectData.tgtLang) {
-      metadata.target_language = projectData.tgtLang;
-    }
     this.manager_.setMetadata(metadata);
 
     // Extract page contexts if the config expects them.
     if (config.USE_PAGE_CONTEXT) {
       this.extractPageContexts();
     }
-    this.showPageContextIfPresent();
+    if (config.USE_SOURCE_MEDIA) {
+      this.extractSourceMedia();
+    }
+    this.showContextAndMediaIfPresent();
 
     this.redrawAllSegments();
     this.recomputeTops();
@@ -2842,26 +4729,27 @@ class AntheaEval {
 
 /**
  * The AntheaPhraseMarker class is used to collect highlighted phrases for the
- *     current sentence.
+ *     current subpara.
  * @final
  */
 class AntheaPhraseMarker {
   /**
    * @param {!AntheaEval} contextedEval
+   * @param {string} color
    */
-  constructor(contextedEval) {
+  constructor(contextedEval, color) {
     /** @private @const {!AntheaEval} */
     this.contextedEval_ = contextedEval;
 
     /** @private @const {string} */
-    this.DEFAULT_COLOR = 'gainsboro';
-    /** @private {string} */
-    this.color_ = this.DEFAULT_COLOR;
+    this.color_ = color;
 
     /** @private {number} */
     this.startSpanIndex_ = -1;
     /** @private {number} */
     this.endSpanIndex_ = -1;
+    /** @private {?Set} */
+    this.markables_ = null;
 
     /** @private {!Array<!Element>} Token span elements */
     this.tokenSpans_ = [];
@@ -2870,14 +4758,22 @@ class AntheaPhraseMarker {
   }
 
   /**
-   * Resets the word spans in the current sentence, getting rid of any
+   * Returns true if the start of the error span has already been marked.
+   * @return {boolean}
+   */
+  startAlreadyMarked() {
+    return this.startSpanIndex_ >= 0;
+  }
+
+  /**
+   * Resets the word spans in the current subpara, getting rid of any
    *     event listeners from spannification done in the previous state. Sets
-   *     element class to 'anthea-word-active' or
-   *     'anthea-space-active'.
+   *     element class to 'anthea-word-active' or 'anthea-word-active-begin' or
+   *     'anthea-space-active' or 'anthea-space-active-begin'.
    */
   resetWordSpans() {
     const ce = this.contextedEval_;
-    ce.redrawCurrSentence();
+    ce.redrawCurrSubpara();
 
     this.tokenSpans_ = ce.getCurrTokenSpans();
 
@@ -2886,15 +4782,22 @@ class AntheaPhraseMarker {
     this.tokenSpanColors_ = [];
     const spanClassSuffix = (this.startSpanIndex_ < 0) ? '-begin' : '';
     const suffix = '-active' + spanClassSuffix;
-    const spaceClass = 'anthea-space' + suffix;
-    const wordClass = 'anthea-word' + suffix;
+    const spaceClass = 'anthea-space';
+    const wordClass = 'anthea-word';
+    const spaceClassActive = spaceClass + suffix;
+    const wordClassActive = wordClass + suffix;
     for (let x = 0; x < this.tokenSpans_.length; x++) {
-      this.tokenSpans_[x].className =
-          this.tokenSpans_[x].className + suffix;
-      if (allowSpaceStart && this.tokenSpans_[x].className == spaceClass) {
-        this.tokenSpans_[x].className = wordClass;
-      }
       this.tokenSpanColors_.push(this.tokenSpans_[x].style.backgroundColor);
+      if (!this.markables_.has(x)) {
+        continue;
+      }
+      const classList = this.tokenSpans_[x].classList;
+      classList.replace(wordClass, wordClassActive);
+      if (classList.replace(spaceClass, spaceClassActive)) {
+        if (allowSpaceStart) {
+          classList.replace(spaceClassActive, wordClassActive);
+        }
+      }
     }
   }
 
@@ -2924,6 +4827,8 @@ class AntheaPhraseMarker {
    * @param {number} spanIndex
    */
   pickEnd(spanIndex) {
+    const ce = this.contextedEval_;
+    ce.noteTiming('marked-error-span-end');
     if (spanIndex < this.startSpanIndex_) {
       this.endSpanIndex_ = this.startSpanIndex_;
       this.startSpanIndex_ = spanIndex;
@@ -2943,15 +4848,7 @@ class AntheaPhraseMarker {
     for (let x = this.startSpanIndex_; x <= this.endSpanIndex_; x++) {
       selected = selected + this.tokenSpans_[x].innerText;
     }
-
-    const markedPhrase = {
-      start: this.startSpanIndex_,
-      end: this.endSpanIndex_,
-      prefix: prefix,
-      selected: selected,
-      color: this.color_,
-    };
-    this.contextedEval_.setMQMPhrase(markedPhrase);
+    ce.setMQMSpan(this.startSpanIndex_, this.endSpanIndex_, prefix, selected);
   }
 
   /**
@@ -2960,56 +4857,49 @@ class AntheaPhraseMarker {
    * @param {number} spanIndex
    */
   prepareToPickEnd(spanIndex) {
-    const ce = this.contextedEval_;
-    ce.setStartedMarking();
-    ce.showGuidance('Click on the end of the error span');
-
     this.startSpanIndex_ = spanIndex;
-
-    /* Remove anthea-word listeners, add new ones. */
+    const ce = this.contextedEval_;
+    this.markables_ = ce.getMarkableSpanIndices(spanIndex);
+    /* Remove anthea-word listeners: we'll add new ones. */
     this.resetWordSpans();
+
+    ce.setStartedMarkingSpan();
+    ce.noteTiming('marked-error-span-start');
+    ce.showGuidance('Click on the end of the error span');
 
     const span = this.tokenSpans_[spanIndex];
     span.style.backgroundColor = this.color_;
 
     for (let x = 0; x < this.tokenSpans_.length; x++) {
+      if (!this.markables_.has(x)) {
+        continue;
+      }
       this.tokenSpans_[x].addEventListener(
         'mouseover', () => { this.highlightTo(x); });
       this.tokenSpans_[x].addEventListener('click', () => { this.pickEnd(x); });
-    }
-    ce.noteTiming('began-marking-phrase');
-  }
-
-  /**
-   * Sets state and UI to wait for the start of the highlighted phrase to get
-   *     picked.
-   */
-  prepareToPickStart() {
-    const ce = this.contextedEval_;
-    this.startSpanIndex_ = -1;
-    this.endSpanIndex_ = -1;
-    this.resetWordSpans();
-
-    ce.showGuidance('Click on the start of an error span not yet marked');
-    const cls = 'anthea-word-active-begin';
-    for (let x = 0; x < this.tokenSpans_.length; x++) {
-      if (this.tokenSpans_[x].className == cls) {
-        this.tokenSpans_[x].addEventListener(
-          'click',
-          () => { this.prepareToPickEnd(x); });
-      }
     }
   }
 
   /**
    * The public entrypoint in the AntheaPhraseMarker object. Sets up the UI to
-   *     collect a highlighted phrase from the current sentence.
-   *     When phrase-marking is done, the contextedEval_ object's
-   *     setMQMPhrase() function will get called.
-   * @param {string} color The color to use for highlighting.
+   * collect a highlighted phrase from the current subpara. When phrase-marking
+   * is done, the contextedEval_ object's setMQMSpan() function will get called.
    */
-  getMarkedPhrase(color) {
-    this.color_ = color || this.DEFAULT_COLOR;
-    this.prepareToPickStart();
+  getMarkedPhrase() {
+    this.startSpanIndex_ = -1;
+    this.endSpanIndex_ = -1;
+    const ce = this.contextedEval_;
+    this.markables_ = ce.getMarkableSpanIndices();
+
+    this.resetWordSpans();
+
+    const cls = 'anthea-word-active-begin';
+    for (let x = 0; x < this.tokenSpans_.length; x++) {
+      if (this.tokenSpans_[x].classList.contains(cls)) {
+        this.tokenSpans_[x].addEventListener(
+          'click',
+          () => { this.prepareToPickEnd(x); });
+      }
+    }
   }
 }

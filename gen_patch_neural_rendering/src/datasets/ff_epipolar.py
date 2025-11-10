@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,8 +19,7 @@ INTERNAL = False  # pylint: disable=g-statement-before-imports
 import os
 from os import path
 
-if not INTERNAL:
-  import cv2  # pylint: disable=g-import-not-at-top
+import cv2
 import imageio
 import jax
 import numpy as np
@@ -109,7 +108,7 @@ class FFEpipolar(BaseDataset):
       batch_pixels = self.images[image_index][ray_indices]
       batch_target_worldtocam = np.tile(self.worldtocamera[image_index],
                                         (l_devices, 1, 1))
-      batch_rays = jax.tree_map(lambda r: r[image_index][ray_indices],
+      batch_rays = jax.tree.map(lambda r: r[image_index][ray_indices],
                                 self.rays)
 
       #--------------------------------------------------------------------------------------
@@ -169,10 +168,10 @@ class FFEpipolar(BaseDataset):
 
     if self.render_path:
       target_view = data_types.Views(
-          rays=jax.tree_map(lambda r: r[idx], self.render_rays),)
+          rays=jax.tree.map(lambda r: r[idx], self.render_rays),)
     else:
       target_view = data_types.Views(
-          rays=jax.tree_map(lambda r: r[idx], self.rays), rgb=self.images[idx])
+          rays=jax.tree.map(lambda r: r[idx], self.rays), rgb=self.images[idx])
 
     batch_target_worldtocam = np.tile(self.inv_camtoworlds[idx],
                                       (l_devices, 1, 1))

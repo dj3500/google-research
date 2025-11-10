@@ -1,4 +1,4 @@
-// Copyright 2022 The Google Research Authors.
+// Copyright 2025 The Google Research Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,15 +29,15 @@ namespace tensorflow {
 namespace tf3d {
 
 template <int dims>
-Status RunSubmanifoldSparseConvBackpropFilter(
+absl::Status RunSubmanifoldSparseConvBackpropFilter(
     const SubmanifoldSparseConvBackpropFilterLaunchOptions& opts) {
   const int batch_size = opts.batch_size();
   const int max_num_coords_per_batch = opts.max_num_coords_per_batch();
   const int in_channels = opts.in_channels();
   const int out_channels = opts.out_channels();
 
-  const int* coordinates_ptr = opts.coordinates.tensor<int32, 3>().data();
-  auto num_valid_coordinates_t = opts.num_valid_coordinates.vec<int32>();
+  const int* coordinates_ptr = opts.coordinates.tensor<int32_t, 3>().data();
+  auto num_valid_coordinates_t = opts.num_valid_coordinates.vec<int32_t>();
   auto input_features_t = opts.input_features.tensor<float, 3>();
   auto d_output_features_t = opts.d_output_features.tensor<float, 3>();
   auto d_filter_t = opts.d_filter->tensor<float, dims + 2>();
@@ -84,11 +84,11 @@ Status RunSubmanifoldSparseConvBackpropFilter(
       }
     }
   }
-  return Status();
+  return absl::Status();
 }
 
 template <>
-Status LaunchSubmanifoldSparseConvBackpropFilter<Eigen::ThreadPoolDevice>(
+absl::Status LaunchSubmanifoldSparseConvBackpropFilter<Eigen::ThreadPoolDevice>(
     const SubmanifoldSparseConvBackpropFilterLaunchOptions& opts) {
   const int dims = opts.coordinates.dim_size(2);
   if (dims == 2) return RunSubmanifoldSparseConvBackpropFilter<2>(opts);

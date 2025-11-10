@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,8 @@ import numpy as np
 
 from sparse_mixers import layers
 from sparse_mixers import routing
+
+jax.config.update("jax_threefry_partitionable", False)
 
 # Type Stubs
 FrozenDict = flax.core.frozen_dict.FrozenDict
@@ -514,7 +516,7 @@ class EncoderBlockTest(parameterized.TestCase):
     self.assertIn("intermediates", state)
     jax.tree_util.tree_map(
         functools.partial(np.testing.assert_allclose, rtol=1e-5),
-        state["intermediates"],
+        flax.core.freeze(state["intermediates"]),
         FrozenDict({
             "feed_forward_sublayer": {
                 "diversity_metrics":

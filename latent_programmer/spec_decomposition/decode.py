@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -106,7 +106,7 @@ def gather_beams(nested, beam_indices, batch_size, new_beam_size):
       return x
     else:
       return x[batch_indices, beam_indices]
-  return jax.tree_map(gather_fn, nested)
+  return jax.tree.map(gather_fn, nested)
 
 
 def gather_topk_beams(nested, score_or_log_prob, batch_size, new_beam_size):
@@ -135,25 +135,25 @@ def gather_topk_beams(nested, score_or_log_prob, batch_size, new_beam_size):
 class BeamState:
   """Holds beam search state data."""
   # The position of the decoding loop in the length dimension.
-  cur_index: jnp.DeviceArray  # scalar int32: current decoded length index
+  cur_index: jax.Array  # scalar int32: current decoded length index
   # The current encodings used in the decoding loop.
-  cur_encoded: jnp.DeviceArray  # float32: [batch_size, beam_size, ...]
+  cur_encoded: jax.Array  # float32: [batch_size, beam_size, ...]
   # The current encoding padding masks used in the decoding loop.
-  cur_encoded_padding_mask: jnp.DeviceArray  # float32
+  cur_encoded_padding_mask: jax.Array  # float32
   # The active sequence log probabilities and finished sequence scores.
-  live_logprobs: jnp.DeviceArray  # float32: [batch_size, beam_size]
-  finished_scores: jnp.DeviceArray  # float32: [batch_size, beam_size]
+  live_logprobs: jax.Array  # float32: [batch_size, beam_size]
+  finished_scores: jax.Array  # float32: [batch_size, beam_size]
   # The current active-beam-searching and finished sequences.
-  live_seqs: jnp.DeviceArray  # int32: [batch_size, beam_size, max_decode_len]
-  finished_seqs: jnp.DeviceArray  # int32: [batch_size, beam_size,
+  live_seqs: jax.Array  # int32: [batch_size, beam_size, max_decode_len]
+  finished_seqs: jax.Array  # int32: [batch_size, beam_size,
   #                                         max_decode_len]
   # Records which of the 'finished_seqs' is occupied and not a filler slot.
-  finished_flags: jnp.DeviceArray  # bool: [batch_size, beam_size]
+  finished_flags: jax.Array  # bool: [batch_size, beam_size]
   # The current state of the autoregressive decoding caches.
   cache: Any  # Any pytree of arrays, e.g. flax attention Cache object.
   # Auxiliary data.
-  live_aux: Optional[Dict[str, jnp.DeviceArray]] = None  # A dict of arrays.
-  finished_aux: Optional[Dict[str, jnp.DeviceArray]] = None  # A dict of arrays.
+  live_aux: Optional[Dict[str, jax.Array]] = None  # A dict of arrays.
+  finished_aux: Optional[Dict[str, jax.Array]] = None  # A dict of arrays.
 
 
 def beam_init(batch_size, beam_size, max_decode_len,
@@ -177,7 +177,7 @@ def beam_init(batch_size, beam_size, max_decode_len,
   # add beam dimension to attention cache pytree elements
   beam_encoded0 = add_beam_dim(encoded, beam_size)
   beam_encoded_padding_mask0 = add_beam_dim(encoded_padding_mask, beam_size)
-  beam_cache0 = jax.tree_map(lambda x: add_beam_dim(x, beam_size), cache)
+  beam_cache0 = jax.tree.map(lambda x: add_beam_dim(x, beam_size), cache)
   return BeamState(cur_index=cur_index0,
                    cur_encoded=beam_encoded0,
                    cur_encoded_padding_mask=beam_encoded_padding_mask0,
@@ -282,7 +282,7 @@ def beam_search(inputs,
 
     # Flatten beam dimension into batch to be compatible with model.
     # {[batch, beam, ...], ...} --> {[batch * beam, ...], ...}
-    flat_cache, flat_encoded, flat_encoded_padding_mask = jax.tree_map(
+    flat_cache, flat_encoded, flat_encoded_padding_mask = jax.tree.map(
         flatten_beam_dim,
         [state.cache, state.cur_encoded, state.cur_encoded_padding_mask])
 
@@ -301,7 +301,7 @@ def beam_search(inputs,
     logits = unflatten_beam_dim(flat_logits, batch_size, beam_size)
     # Unflatten beam dimension in attention cache arrays
     # {[batch * beam, ...], ...} --> {[batch, beam, ...], ...}
-    new_cache = jax.tree_map(
+    new_cache = jax.tree.map(
         lambda x: unflatten_beam_dim(x, batch_size, beam_size), new_flat_cache)
 
     # Gather log probabilities from logits

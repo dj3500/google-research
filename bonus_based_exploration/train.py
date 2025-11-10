@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ flags.DEFINE_string('base_dir', None,
                     'Base directory to host all required sub-directories.')
 flags.DEFINE_multi_string(
     'gin_files', [], 'List of paths to gin configuration files (e.g.'
-    '"third_party/py/dopamine/agents/dqn/dqn.gin").')
+    '"third_party/py/dopamine/tf/agents/dqn/dqn.gin").')
 flags.DEFINE_multi_string(
     'gin_bindings', [],
     'Gin bindings to override the values set in the config files '

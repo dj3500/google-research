@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2025 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ Borrows logic from:
 https://github.com/google-research/google-research/blob/master/tft/data_formatters/favorita.py
 """
 
+import datetime
 import gc
 import glob
 import os
@@ -93,8 +94,8 @@ def preprocess_temporal_data(data_folder, output_fpath):
     pre-processed temporal data
   """
   # Extract only a subset of data to save/process for efficiency
-  start_date = pd.datetime(2015, 1, 1)
-  end_date = pd.datetime(2016, 6, 1)
+  start_date = datetime.datetime(2015, 1, 1)
+  end_date = datetime.datetime(2016, 6, 1)
 
   print('Regenerating data...')
 
