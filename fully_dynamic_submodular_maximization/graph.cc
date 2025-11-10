@@ -25,6 +25,8 @@
 
 #include "graph.h"
 
+#include <set>
+
 using std::unordered_set;
 using std::vector;
 
@@ -57,7 +59,7 @@ Graph::Graph(const std::string& name) : name_(name) {
   numEdges_ = 0;
   const bool is_dblp = (name_ == "dblp");
   int64_t first_endpoint, second_endpoint;
-  std::set<int> left_vertices, right_vertices;
+  std::set<int> leftVertices, rightVertices;
   while (input >> first_endpoint >> second_endpoint) {
     if (!renumber.count(first_endpoint)) {
       renumber[first_endpoint] = numVertices_;
