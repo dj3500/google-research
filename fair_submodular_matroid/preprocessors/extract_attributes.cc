@@ -41,14 +41,16 @@ const int AGE = 7;
 const int HEIGHT_WIDTH = 8;
 
 int main() {
-  std::ifstream fin1("soc-pokec-profiles.txt");
+  std::ifstream fin1("soc-pokec-profiles.txt", std::ios::binary);
+  // std::ios::binary is needed to avoid issues on Windows,
+  // as the input files seems to have weird characters (Unicode?)
   int cnt = 0;
   char ch;
   while (fin1.get(ch)) cnt += ch == '\n';
   std::cout << "Number of end-line = " << cnt << "." << std::endl;
   fin1.close();
 
-  std::ifstream fin("soc-pokec-profiles.txt");
+  std::ifstream fin("soc-pokec-profiles.txt", std::ios::binary);
   std::ofstream fout("filtered-attributes.txt");
 
   int columns = -1;
