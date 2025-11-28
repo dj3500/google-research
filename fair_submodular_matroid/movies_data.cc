@@ -98,6 +98,7 @@ MoviesData::MoviesData() {
   }
   std::string line;
   std::map<int, std::string> idToGenre;
+  RandomHandler::generator_.seed(std::mt19937::default_seed); // for better determinism/reproduciblity (DetermineMainGenre uses RandomHandler)
   while (std::getline(dat, line)) {
     if (line.size() > 2) {
       // a line looks like this:
